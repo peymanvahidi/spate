@@ -40,6 +40,7 @@ Request: `{"id": 1, "method": "add", "params": {...}}` → Response: `{"id": 1, 
 | `add` | `AddRequest` | `{"job_id": "<uuid>"}` |
 | `list` | — | `[JobView]` |
 | `pause` / `resume` / `cancel` / `remove` | `{"job_id"}` | `{}` |
+| `set_path` | `{"job_id", "path"}` | `{}`: records that a finished job's file was moved (absolute path to an existing regular file; job must be `done`). Updates `path`/`filename`/`dir`, persists, pushes one `job` event. Never touches the file. |
 | `subscribe` | — | `{}` then pushes `{"event": "job", "job": JobView}` lines (≈4/s per running job, plus one on every state change) and `{"event": "removed", "job_id"}` after `remove`, until the client disconnects |
 
 `AddRequest`: `{url, headers: [[name, value]], filename?, referrer?, size_hint?, mime?, source: "brave" | "cli" | "paste", kind: "file" | "media"}`.
