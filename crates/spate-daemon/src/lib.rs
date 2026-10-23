@@ -194,6 +194,11 @@ impl Daemon {
     }
 }
 
+/// The `source` column back into the enum (stored lower-case, as in the wire format).
+fn parse_source(s: &str) -> Option<spate_proto::Source> {
+    serde_json::from_value(serde_json::Value::String(s.to_string())).ok()
+}
+
 fn lost_cookies(row: &JobRow) -> bool {
     row.had_secrets && !row.headers.iter().any(|(k, _)| db::is_secret_header(k))
 }
@@ -270,6 +275,7 @@ impl Entry {
             error: r.error.clone(),
             created_at: r.created_ms / 1000,
             finished_at: r.finished_at,
+            source: parse_source(&r.source),
         }
     }
 
@@ -840,6 +846,7 @@ mod tests {
         assert_eq!(by("q").state, JobState::Paused);
         assert_eq!(by("q").error, None);
         assert_eq!(by("d").state, JobState::Done);
+        assert_eq!(by("d").source, Some(spate_proto::Source::Brave), "source comes back from the database");
         // remove: only finished jobs.
         assert_eq!(h.remove("r").await.unwrap_err().code, E_BAD_STATE);
         h.remove("d").await.unwrap();
@@ -877,6 +884,7 @@ mod tests {
         assert_eq!(ja.state, JobState::Running);
         assert_eq!(jb.state, JobState::Queued, "max_concurrent = 1");
         assert_eq!(ja.filename, "same.bin");
+        assert_eq!(ja.source, Some(spate_proto::Source::Cli));
         assert_eq!(jb.filename, "same (1).bin", "no two unfinished jobs share a part file");
         h.pause(&b).await.unwrap();
         assert_eq!(h.get(&b).unwrap().state, JobState::Paused);

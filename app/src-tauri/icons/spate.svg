@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- Spate app icon: four connection bars over a download chevron, on a dark rounded square
+       (macOS icon grid: 824 px body, 100 px margin). Source for `cargo tauri icon`. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2a2d34"/>
+      <stop offset="1" stop-color="#121317"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.10"/>
+      <stop offset="0.5" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)"/>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#sheen)"/>
+  <rect x="101" y="101" width="822" height="822" rx="184" fill="none" stroke="#ffffff" stroke-opacity="0.08" stroke-width="2"/>
+  <rect x="212" y="250" width="120" height="330" rx="40" fill="#0C7A64"/>
+  <rect x="372" y="250" width="120" height="330" rx="40" fill="#2F6FA8"/>
+  <rect x="532" y="250" width="120" height="330" rx="40" fill="#C9831F"/>
+  <rect x="692" y="250" width="120" height="330" rx="40" fill="#7B5BA6"/>
+  <path d="M352 672 L512 804 L672 672" fill="none" stroke="#f4f4f6" stroke-width="64" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

@@ -127,6 +127,9 @@ pub struct JobView {
     /// Unix seconds.
     pub created_at: u64,
     pub finished_at: Option<u64>,
+    /// Who added the job (`brave`, `cli`, `paste`). `None` for an unknown value.
+    #[serde(default)]
+    pub source: Option<Source>,
 }
 
 /// Daemon IPC envelope (newline-delimited JSON).
