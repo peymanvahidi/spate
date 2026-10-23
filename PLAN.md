@@ -8,7 +8,7 @@ Subagents build the pieces, each in its own git worktree/branch off `feat/engine
 | 1 | Download engine + `spate get` CLI | agent | `crates/spate-core`, `crates/spate-cli` | contracts | merged |
 | 1 | Brave extension + native host | agent | `extension/`, `crates/spate-host` | contracts | merged |
 | 2 | Daemon: queue, SQLite history, socket server (+ engine follow-ups) | agent | `crates/spate-daemon`, `crates/spate-core`, `crates/spate-cli` | engine | in progress |
-| 3a | App UI: menu-bar popover, capture card, main window, notch island (web, sample data) | agent | `app/ui/` | contracts | in progress |
+| 3a | App UI: menu-bar popover, capture card, main window, notch island (web, sample data) | agent | `app/ui/` | contracts | merged |
 | 3b | Tauri 2 shell: tray, windows, notch window, daemon embedding, login item | agent | `app/` (except `app/ui`) | daemon, 3a | todo |
 | 5 | `make install`, end-to-end test in Brave | agent + PM | `Makefile`, `scripts/` | all | todo |
 | v2 | Video download (yt-dlp/ffmpeg), scheduler, speed limit, link grabbing, checksums | — | — | — | later |

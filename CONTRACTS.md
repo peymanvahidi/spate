@@ -40,12 +40,14 @@ Request: `{"id": 1, "method": "add", "params": {...}}` → Response: `{"id": 1, 
 | `add` | `AddRequest` | `{"job_id": "<uuid>"}` |
 | `list` | — | `[JobView]` |
 | `pause` / `resume` / `cancel` / `remove` | `{"job_id"}` | `{}` |
-| `subscribe` | — | `{}` then pushes `{"event": "job", "job": JobView}` lines (≈4/s per running job) until the client disconnects |
+| `subscribe` | — | `{}` then pushes `{"event": "job", "job": JobView}` lines (≈4/s per running job, plus one on every state change) and `{"event": "removed", "job_id"}` after `remove`, until the client disconnects |
 
 `AddRequest`: `{url, headers: [[name, value]], filename?, referrer?, size_hint?, mime?, source: "brave" | "cli" | "paste", kind: "file" | "media"}`.
 `kind: "media"` is accepted but answered with error code `not_supported` until v2.
 
-`JobView`: `{id, url, filename, path?, state: "queued"|"running"|"paused"|"done"|"failed", total?, downloaded, speed_bps, eta_secs?, connections, segments: [{start, end, pos}], error?, created_at, finished_at?}`.
+`JobView`: `{id, url, filename, path?, state: "queued"|"running"|"paused"|"done"|"failed", total?, downloaded, speed_bps, eta_secs?, connections, segments: [{start, end, pos, active}], error?, created_at, finished_at?}`. Segment ranges are `[start, end)`.
+
+`cancel` stops the job, deletes its `.spate-part` and state files, and leaves it in the history as `state: "failed", error: "cancelled"`. `remove` drops a finished or failed job from the history (never deletes a finished file) and emits `removed`.
 
 ## Native messaging (extension ↔ `spate-host`)
 
