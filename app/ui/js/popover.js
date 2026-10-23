@@ -206,3 +206,7 @@ document.addEventListener('paste', (e) => {
 
 store.init().then(render);
 store.subscribe(render);
+// Removed (maybe in another window): drop the selection; render() drops the row.
+store.onRemoved((id) => {
+  if (selected === id) selected = null;
+});

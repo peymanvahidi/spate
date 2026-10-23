@@ -53,6 +53,11 @@ struct Server {
     stall_tails: AtomicU32,
     /// Start offsets of the ranged (non-probe) requests, in arrival order.
     starts: Mutex<Vec<u64>>,
+    /// The next N ranged requests starting at or after `hang_from` never get response headers.
+    hang_headers: AtomicU32,
+    /// The next N ranged requests starting at or after `hang_from` get headers, then no bytes.
+    hang_body: AtomicU32,
+    hang_from: AtomicU64,
 }
 
 impl Server {
@@ -81,6 +86,9 @@ impl Server {
             stall_zero_tail: AtomicBool::new(false),
             stall_tails: AtomicU32::new(0),
             starts: Mutex::new(Vec::new()),
+            hang_headers: AtomicU32::new(0),
+            hang_body: AtomicU32::new(0),
+            hang_from: AtomicU64::new(u64::MAX),
         })
     }
 }
@@ -159,6 +167,11 @@ async fn handle(req: Request<Incoming>, st: Arc<Server>) -> Result<Response<Body
         st.starts.lock().unwrap().push(start);
     }
     let slow = honour && !is_probe && start == 0 && st.slow_zero_rate.swap(0, SeqCst) > 0;
+    let hang_zone = honour && !is_probe && start >= st.hang_from.load(SeqCst);
+    if hang_zone && take_one(&st.hang_headers) {
+        tokio::time::sleep(Duration::from_secs(60)).await; // never answers in a test
+    }
+    let hang_body = hang_zone && take_one(&st.hang_body);
     let stall_at = (honour
         && !is_probe
         && ((start == 0 && st.stall_zero_tail.swap(false, SeqCst)) || take_one(&st.stall_tails)))
@@ -171,6 +184,9 @@ async fn handle(req: Request<Incoming>, st: Arc<Server>) -> Result<Response<Body
     tokio::spawn(async move {
         let mut pos = start;
         const CHUNK: u64 = 16 * 1024;
+        if hang_body {
+            tokio::time::sleep(Duration::from_secs(60)).await; // headers went out; no bytes follow
+        }
         while pos < end {
             if stall_at.is_some_and(|s| pos >= s) {
                 tokio::time::sleep(Duration::from_secs(60)).await; // never finishes in a test
@@ -561,4 +577,46 @@ async fn simultaneous_stalls_reconnect_early() {
     println!("finished in {took:?}; request starts {:?}", st.starts.lock().unwrap());
     assert_eq!(sha(&std::fs::read(&path).unwrap()), sha(&st.data));
     assert!(took < Duration::from_secs(13), "waited for the stall timeout: {took:?}");
+}
+
+/// 12 MiB in three 4 MiB pieces at 4 MiB/s per connection; the request for the last piece hangs
+/// (`hang` sets which way). The other two finish in ~1 s; the last piece must not wait for a
+/// timeout on the dead connection.
+async fn hung_last_piece(name: &str, hang: impl Fn(&Server)) -> Option<(Duration, Vec<u64>)> {
+    let st = Server::new(12 * 1024 * 1024, true);
+    st.rate.store(4 * 1024 * 1024, SeqCst);
+    st.hang_from.store(8 * 1024 * 1024, SeqCst);
+    hang(&st);
+    let url = start(st.clone(), name).await?;
+    let dir = tempfile::tempdir().unwrap();
+    let mut j = job(&url, dir.path());
+    j.max_connections = 4;
+    j.start_connections = Some(3);
+    let t = std::time::Instant::now();
+    let path = run(j).await.unwrap();
+    let took = t.elapsed();
+    let starts = st.starts.lock().unwrap().clone();
+    assert_eq!(sha(&std::fs::read(&path).unwrap()), sha(&st.data));
+    assert!(leftovers(dir.path()).is_empty());
+    Some((took, starts))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn last_piece_without_response_headers() {
+    let Some((took, starts)) = hung_last_piece("noheaders.bin", |st| st.hang_headers.store(1, SeqCst)).await else {
+        return;
+    };
+    println!("finished in {took:?}; request starts {starts:?}");
+    assert!(took < Duration::from_secs(10), "waited on the dead connection: {took:?}");
+    assert!(starts.iter().filter(|&&s| s == 8 * 1024 * 1024).count() >= 2, "last piece was re-requested");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn last_piece_with_headers_but_no_bytes() {
+    let Some((took, starts)) = hung_last_piece("nobytes.bin", |st| st.hang_body.store(1, SeqCst)).await else {
+        return;
+    };
+    println!("finished in {took:?}; request starts {starts:?}");
+    assert!(took < Duration::from_secs(10), "waited on the dead connection: {took:?}");
+    assert!(starts.iter().filter(|&&s| s >= 8 * 1024 * 1024).count() >= 2, "last piece was re-requested");
 }

@@ -28,8 +28,24 @@ struct Server {
     data: Bytes,
     /// Bytes per second per connection; 0 = unlimited.
     rate: AtomicU64,
+    /// Requests whose path ends with one of these get `slow_rate` instead of `rate` (0 = `rate`).
+    slow_paths: Vec<&'static str>,
+    slow_rate: AtomicU64,
     served: AtomicU64,
     concurrent: AtomicUsize,
+}
+
+impl Server {
+    fn new(len: usize, rate: u64) -> Arc<Self> {
+        Arc::new(Server {
+            data: Bytes::from(gen_data(len)),
+            rate: AtomicU64::new(rate),
+            slow_paths: vec![],
+            slow_rate: AtomicU64::new(0),
+            served: AtomicU64::new(0),
+            concurrent: AtomicUsize::new(0),
+        })
+    }
 }
 
 fn gen_data(len: usize) -> Vec<u8> {
@@ -67,6 +83,7 @@ async fn handle(req: Request<Incoming>, st: Arc<Server>) -> Result<Response<Body
         None => (0, len),
     };
     b = b.header("content-length", end - start);
+    let slow = st.slow_paths.iter().any(|p| req.uri().path().ends_with(p));
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Frame<Bytes>, std::io::Error>>(4);
     let st2 = st.clone();
     st.concurrent.fetch_add(1, SeqCst);
@@ -75,7 +92,11 @@ async fn handle(req: Request<Incoming>, st: Arc<Server>) -> Result<Response<Body
         const CHUNK: u64 = 16 * 1024;
         while pos < end {
             let next = (pos + CHUNK).min(end);
-            let rate = st2.rate.load(SeqCst);
+            let mut rate = st2.rate.load(SeqCst);
+            let slow_rate = st2.slow_rate.load(SeqCst);
+            if slow && slow_rate > 0 {
+                rate = slow_rate;
+            }
             if rate > 0 {
                 tokio::time::sleep(Duration::from_secs_f64((next - pos) as f64 / rate as f64)).await;
             }
@@ -199,11 +220,13 @@ fn caffeinate_running() -> bool {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn queue_pause_resume_cancel_restart() {
+    // Job 2 (f2) runs at 1 MiB/s per connection and finishes in ~8 s. Jobs 0 and 3 must still be
+    // unfinished when the daemon restarts right after that, so their files crawl at 128 KiB/s per
+    // connection (12 MiB at most 2 connections: 48 s at the very least) until the restart.
     let st = Arc::new(Server {
-        data: Bytes::from(gen_data(12 * 1024 * 1024)),
-        rate: AtomicU64::new(1024 * 1024),
-        served: AtomicU64::new(0),
-        concurrent: AtomicUsize::new(0),
+        slow_paths: vec!["/f0.bin", "/f3.bin"],
+        slow_rate: AtomicU64::new(128 * 1024),
+        ..Arc::into_inner(Server::new(12 * 1024 * 1024, 1024 * 1024)).unwrap()
     });
     let Some(base) = start_server(st.clone()).await else { return };
     let dir = tmp_dir();
@@ -332,6 +355,13 @@ async fn queue_pause_resume_cancel_restart() {
         "before restart: {:?}",
         before.iter().map(|j| (j["state"].as_str().unwrap().to_string(), j["downloaded"].clone())).collect::<Vec<_>>()
     );
+    // "done" always means the whole, correct file is in place.
+    for j in before.iter().filter(|j| j["state"] == "done") {
+        let p = PathBuf::from(j["path"].as_str().unwrap());
+        assert_eq!(sha(&std::fs::read(&p).unwrap()), sha(&st.data), "{j}");
+    }
+    let states: Vec<&str> = before.iter().map(|j| j["state"].as_str().unwrap()).collect();
+    assert_eq!(states, ["running", "failed", "done", "running"]);
     watcher.abort();
     daemon.shutdown().await;
     assert!(!sock.exists(), "shutdown removes the socket");
@@ -394,6 +424,7 @@ async fn queue_pause_resume_cancel_restart() {
     // Resume both paused jobs and let everything finish quickly.
     st.served.store(0, SeqCst);
     st.rate.store(0, SeqCst);
+    st.slow_rate.store(0, SeqCst);
     c.call("resume", json!({"job_id": ids[0]})).await;
     c.call("resume", json!({"job_id": ids[3]})).await;
     for id in [&ids[0], &ids[3]] {
@@ -428,6 +459,31 @@ async fn queue_pause_resume_cancel_restart() {
         .collect();
     println!("download dir: {leftovers:?}");
     assert!(leftovers.iter().all(|n| !n.contains(".spate-part")));
+
+    // set_path: the app moved a finished file ("Change folder").
+    let j3 = c.job(&ids[3]).await;
+    let moved_dir = dir.join("moved");
+    std::fs::create_dir_all(&moved_dir).unwrap();
+    let moved = moved_dir.join("f3 moved.bin");
+    std::fs::rename(j3["path"].as_str().unwrap(), &moved).unwrap();
+    let missing = moved_dir.join("nope.bin");
+    let r = c.raw("set_path", json!({"job_id": ids[3], "path": missing})).await;
+    assert_eq!(r["error"]["code"], "bad_request", "{r}");
+    let r = c.raw("set_path", json!({"job_id": ids[1], "path": moved})).await;
+    assert_eq!(r["error"]["code"], "bad_state", "only done jobs: {r}");
+    assert_eq!(c.call("set_path", json!({"job_id": ids[3], "path": moved})).await, json!({}));
+    let pushed = tokio::time::timeout(Duration::from_secs(2), sub.line()).await.unwrap();
+    println!("push after set_path: {pushed}");
+    assert_eq!(pushed["event"], "job");
+    assert_eq!(pushed["job"]["id"], ids[3]);
+    assert_eq!(pushed["job"]["path"], moved.to_str().unwrap());
+    assert_eq!(pushed["job"]["filename"], "f3 moved.bin");
+    assert_eq!(c.job(&ids[3]).await["path"], moved.to_str().unwrap());
+    daemon.shutdown().await;
+    // It survives a restart.
+    let daemon = Daemon::start(cfg.clone()).await.unwrap();
+    let mut c = Client::connect(&sock).await;
+    assert_eq!(c.job(&ids[3]).await["path"], moved.to_str().unwrap());
     daemon.shutdown().await;
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -445,12 +501,7 @@ fn rusqlite_query(path: &Path) -> Vec<String> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn host_memory_is_learned_and_used() {
     // 64 MiB (the minimum that teaches the memory) at 2 MiB/s per connection: long enough to ramp up.
-    let st = Arc::new(Server {
-        data: Bytes::from(gen_data(64 * 1024 * 1024)),
-        rate: AtomicU64::new(2 * 1024 * 1024),
-        served: AtomicU64::new(0),
-        concurrent: AtomicUsize::new(0),
-    });
+    let st = Server::new(64 * 1024 * 1024, 2 * 1024 * 1024);
     let Some(base) = start_server(st.clone()).await else { return };
     let dir = tmp_dir();
     let mut cfg = Config::in_dir(&dir);

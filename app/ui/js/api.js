@@ -3,7 +3,7 @@
 // it uses commands and events; in a plain browser it uses the in-page mock.
 //
 // Contract for the shell (phase 3b): see tauriBackend() below for the exact command names,
-// argument shapes and the `job` event. All JobView objects are spate-proto `JobView`.
+// argument shapes and the `job` / `removed` events. All JobView objects are spate-proto `JobView`.
 
 import { createMock } from './mock.js';
 
@@ -29,6 +29,17 @@ function tauriBackend(t) {
       let un = null;
       let dead = false;
       t.event.listen('job', (e) => cb(e.payload)).then((u) => (dead ? u() : (un = u)));
+      return () => {
+        dead = true;
+        if (un) un();
+      };
+    },
+    /** Event "removed", payload = job id: the job left the history (removed in any window). Returns an unsubscribe fn. */
+    onRemoved(cb) {
+      let un = null;
+      let dead = false;
+      // Payload is the id string; accept {job_id} too, like the socket push.
+      t.event.listen('removed', (e) => cb(typeof e.payload === 'string' ? e.payload : e.payload?.job_id)).then((u) => (dead ? u() : (un = u)));
       return () => {
         dead = true;
         if (un) un();
@@ -81,6 +92,9 @@ export const remove = (id) => backend.remove(id);
 export const reveal = (id) => backend.reveal(id);
 export const open = (id) => backend.open(id);
 export const onJob = (cb) => backend.onJob(cb);
+export const onRemoved = (cb) => backend.onRemoved(cb);
+/** Stop the mock's timer (node tests); no-op in the shell. */
+export const stopMock = () => backend.stop?.();
 export const openWindow = (name) => backend.openWindow(name);
 export const closeWindow = () => backend.closeWindow();
 export const chooseFolder = (id) => backend.chooseFolder(id);

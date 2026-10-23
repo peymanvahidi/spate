@@ -156,3 +156,11 @@ store.init().then(() => {
   if (pinned) setExpanded(true);
 });
 store.subscribe(render);
+// Removed (maybe in another window): drop its row now; render() then resizes or hides the island.
+store.onRemoved((id) => {
+  const r = rows.get(id);
+  if (!r) return;
+  r.bar.destroy();
+  r.el.remove();
+  rows.delete(id);
+});
