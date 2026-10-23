@@ -5,6 +5,7 @@ members = [
     "crates/spate-core",
     "crates/spate-cli",
     "crates/spate-host",
+    "crates/spate-daemon",
 ]
 
 [workspace.package]

@@ -1199,6 +1199,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "spate-daemon"
+version = "0.1.0"
+dependencies = [
+ "spate-core",
+ "spate-proto",
+]
+
+[[package]]
 name = "spate-host"
 version = "0.1.0"
 dependencies = [
