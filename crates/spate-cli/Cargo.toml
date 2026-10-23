@@ -1,0 +1,13 @@
+[package]
+name = "spate-cli"
+
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+spate-proto.workspace = true
+
+[[bin]]
+name = "spate"
+path = "src/main.rs"
