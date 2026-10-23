@@ -1,0 +1,10 @@
+{
+  "name": "spate-extension",
+  "private": true,
+  "type": "module",
+  "description": "Spate Brave extension. No build step: load this folder unpacked.",
+  "scripts": {
+    "test": "node --test",
+    "check": "for f in background.js content.js lib/*.js ui/*.js test/*.js; do node --check \"$f\" || exit 1; done"
+  }
+}

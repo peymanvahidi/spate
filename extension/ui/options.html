@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Spate Settings</title>
+  <link rel="stylesheet" href="common.css">
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <main>
+    <header>
+      <img src="../icons/icon-48.png" width="32" height="32" alt="">
+      <div>
+        <h1>Spate</h1>
+        <p class="muted">Big downloads from Brave go to Spate. Hold Option (⌥) while clicking a link to keep it in Brave.</p>
+      </div>
+    </header>
+
+    <section class="card">
+      <label class="row">
+        <span>
+          <strong>Capture downloads</strong>
+          <span class="muted sub">Hand matching downloads to Spate automatically.</span>
+        </span>
+        <input type="checkbox" id="enabled" class="switch">
+      </label>
+      <div class="row">
+        <span>
+          <strong>Size threshold</strong>
+          <span class="muted sub">Take over files at least this big.</span>
+        </span>
+        <select id="threshold"></select>
+      </div>
+    </section>
+
+    <section class="card">
+      <label for="types"><strong>File types</strong></label>
+      <span class="muted sub">Always captured, whatever their size. Separate with spaces or commas.</span>
+      <textarea id="types" rows="3" spellcheck="false"></textarea>
+    </section>
+
+    <section class="card">
+      <label for="sites"><strong>Never capture on these sites</strong></label>
+      <span class="muted sub">One site per line, e.g. <code>example.com</code> (subdomains included).</span>
+      <textarea id="sites" rows="4" spellcheck="false" placeholder="example.com"></textarea>
+    </section>
+
+    <footer>
+      <button id="reset" class="secondary">Restore defaults</button>
+      <span id="saved" class="muted" aria-live="polite"></span>
+    </footer>
+  </main>
+  <script type="module" src="options.js"></script>
+</body>
+</html>

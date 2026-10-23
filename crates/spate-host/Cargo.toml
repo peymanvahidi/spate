@@ -3,6 +3,8 @@ name = "spate-host"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "Chrome/Brave native messaging host that forwards extension requests to the Spate daemon"
 
 [dependencies]
 spate-proto.workspace = true
+serde_json.workspace = true
