@@ -53,12 +53,16 @@ Standard Chrome framing (4-byte little-endian length + JSON). One request → on
 | `{"type": "ping"}` | `{"ok": true, "version": "0.1.0"}` |
 | `{"type": "add", ...AddRequest}` | `{"ok": true, "job_id"}` or `{"ok": false, "error": "app_not_running" \| "<message>"}` |
 
-The host forwards to the daemon socket. If the socket isn't there, it runs `open -b com.spate.app`, waits up to 1.5 s for the socket, then gives up with `app_not_running`.
+The host forwards to the daemon socket. If the socket isn't there, it runs `open -g -b com.spate.app`, waits up to 1.5 s for the socket, then gives up with `app_not_running`.
+
+Error strings the extension can see: `app_not_running`, `<daemon code>: <message>` (e.g. `not_supported: …`), `bad_request: …`, `unknown_type: …`, `timeout: daemon did not answer` (10 s), `io_error: …` from the host; `timeout` and `host_missing` from the extension itself.
+
+Extension ID (pinned by `key` in `extension/manifest.json`): `akcgnbcpioinnkkmoobjdgnnmebipnil`.
 
 ## Capture flow (extension)
 
 1. `downloads.onCreated` → apply filters (≥ threshold, default 20 MB, or extension in the type list; never `blob:`/`data:`; skip downloads the extension started itself).
 2. `downloads.pause(id)`, collect cookies (`cookies.getAll`), referrer, user agent.
-3. Send `add`. On `ok: true` → `downloads.cancel` + `downloads.erase`. On anything else, or no answer in 2 s → `downloads.resume` (Brave keeps it). Nothing is ever lost.
+3. Send `add`. On `ok: true` → `downloads.cancel` + `downloads.erase`. On anything else, or no answer in 4 s → `downloads.resume` (Brave keeps it). Nothing is ever lost.
 4. Holding Option (Alt) while clicking a link keeps that download in Brave.
 5. Cookies are never logged or stored.

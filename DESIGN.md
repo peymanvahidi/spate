@@ -15,7 +15,7 @@ Design brief and questionnaire: https://claude.ai/artifact/J5RTRAFSv5igPM9KsQ5J6
 - **Resume:** sidecar state (segments, ETag, Last-Modified, final URL) flushed atomically ~1 s; resume with `If-Range`.
 - **App:** Tauri 2, menu-bar agent started at login; one core shared by app, native-messaging host and `spate` CLI over a Unix socket.
 - **Storage:** `~/Library/Application Support/Spate/` (SQLite WAL + settings.toml).
-- **Brave:** MV3 extension + native messaging host (no open ports); forwards cookies / referer / UA in memory only; if the app doesn't answer in 300 ms, Brave keeps the download.
+- **Brave:** MV3 extension + native messaging host (no open ports); forwards cookies / referer / UA in memory only; the Brave download is paused while Spate is asked; if Spate doesn't accept within 4 s, Brave resumes and keeps it.
 - **Files:** quarantine flag + "Where from" set on downloads; sleep prevented while active.
 - **Install:** `make install` → ~/Applications, native-messaging manifest, login item; extension via Load unpacked with pinned key.
 

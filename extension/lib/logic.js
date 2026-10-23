@@ -1,7 +1,7 @@
 // Pure decision logic for the Spate extension. No `chrome.*` here, so it runs under `node --test`.
 
 export const NATIVE_HOST = 'com.spate.host';
-export const NATIVE_TIMEOUT_MS = 2000;
+export const NATIVE_TIMEOUT_MS = 4000; // host may wait 1.5 s for the app to start; a paused download costs nothing
 export const BYPASS_WINDOW_MS = 2000;
 export const MAX_MEDIA_PER_TAB = 50;
 export const THRESHOLD_CHOICES_MB = [5, 20, 50, 100];
