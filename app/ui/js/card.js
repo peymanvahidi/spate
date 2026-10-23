@@ -1,5 +1,7 @@
 // Capture card: shown when Brave hands a download over (UX choice 2). Auto-starts after 2 s,
 // then becomes the live progress view and dismisses itself ~4 s after it's running (hover keeps it).
+// In the shell the daemon has already started a Brave job when the card appears, so the 2 s are
+// only a dismissable "Starting…" moment, never a gate: the card doesn't call resume there.
 // URL: card.html?job=<id>   (&stay=1 disables auto-dismiss, for screenshots/dev)
 import * as api from './api.js';
 import * as store from './store.js';
@@ -51,7 +53,8 @@ function render() {
   if (!iconSet) {
     $('icon').replaceChildren(jobIcon(j, 34));
     iconSet = true;
-    spark = new SpeedGraph($('spark'), { source: () => store.speedHistory(jobId), seconds: 30, fit: true });
+    // A sparkline needs a few samples before it reads as a line, and should span its width early on.
+    spark = new SpeedGraph($('spark'), { source: () => store.speedHistory(jobId), seconds: 30, fit: true, minPoints: 3, minSpan: 3000 });
   }
   card.className = `card state-${j.state}${card.classList.contains('leaving') ? ' leaving' : ''}`;
   $('name').textContent = j.filename;
@@ -63,7 +66,9 @@ function render() {
 
   const stats = $('stats');
   stats.replaceChildren();
-  if (phase === 'countdown' && j.state !== 'running' && j.state !== 'done') {
+  if (phase === 'countdown' && api.isShell && j.state !== 'done' && j.state !== 'failed') {
+    stats.append(h('div', 'Starting…'), h('div.line2', 'Saving to Spate · ⌥-click a link to keep it in Brave'));
+  } else if (phase === 'countdown' && j.state !== 'running' && j.state !== 'done') {
     const left = Math.max(0, Math.ceil((countdownEnd - performance.now()) / 1000));
     stats.append(h('div', `Starting in ${left} s`), h('div.line2', 'Saving to Spate · ⌥-click a link to keep it in Brave'));
   } else if (j.state === 'running') {
@@ -91,13 +96,21 @@ function render() {
       phase = 'done';
       armDismiss();
     }
-  } else if (j.state === 'running' && phase === 'countdown') {
+  } else if (j.state === 'running' && phase === 'countdown' && !api.isShell) {
     becomeRunning();
   }
 }
 
 function startCountdown() {
   const j = job();
+  // Shell: the job is already running; keep the short "Starting…" moment, without a Start button.
+  if (api.isShell && j && j.state !== 'done' && j.state !== 'failed') {
+    $('start').hidden = true;
+    countdownEnd = performance.now() + COUNTDOWN_MS;
+    countdownTimer = setTimeout(startNow, COUNTDOWN_MS);
+    render();
+    return;
+  }
   if (!j || j.state === 'running' || j.state === 'done') {
     phase = j?.state === 'done' ? 'done' : 'running';
     $('start').hidden = j?.state !== 'done';
@@ -119,7 +132,8 @@ async function startNow() {
   clearTimeout(countdownTimer);
   if (phase !== 'countdown') return;
   const j = job();
-  if (j && (j.state === 'queued' || j.state === 'paused')) await api.resume(j.id);
+  // Only the browser mock gates the start; the daemon starts Brave jobs on its own.
+  if (!api.isShell && j && (j.state === 'queued' || j.state === 'paused')) await api.resume(j.id);
   becomeRunning();
 }
 

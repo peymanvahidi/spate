@@ -60,7 +60,8 @@ export class SpeedGraph {
     const now = (this.live && !reducedMotion.matches ? clock : pts.at(-1)?.t ?? clock) - (this.live ? 250 : 0);
     // `fit`: a young history fills the width instead of hugging the right edge.
     let span = this.opts.seconds * 1000;
-    if (this.opts.fit && pts.length) span = Math.min(span, Math.max(8000, now - pts[0].t));
+    // `minSpan`: the narrowest window a young history is stretched over (default 8 s).
+    if (this.opts.fit && pts.length) span = Math.min(span, Math.max(this.opts.minSpan ?? 8000, now - pts[0].t));
     this.span = this.span ? this.span + (span - this.span) * 0.1 : span;
     span = this.span;
     const visible = pts.filter((p) => p.t >= now - span - 1000);
@@ -97,7 +98,8 @@ export class SpeedGraph {
       ctx.lineTo(w, top + ph + 0.5);
       ctx.stroke();
     }
-    if (visible.length < 2) return;
+    // `minPoints`: draw nothing until there are this many samples (two make a bare corner).
+    if (visible.length < Math.max(2, this.opts.minPoints ?? 2)) return;
 
     // Smooth path (monotone-ish midpoint curve).
     const xy = visible.map((p) => [X(p.t), Y(p.v)]);

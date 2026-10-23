@@ -1,0 +1,46 @@
+[package]
+name = "spate-app"
+description = "Spate: menu-bar download accelerator (Tauri shell around the in-process daemon)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+default-run = "spate-app"
+
+[[bin]]
+name = "spate-app"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+spate-proto.workspace = true
+spate-daemon = { path = "../../crates/spate-daemon" }
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+tauri = { version = "2", features = ["tray-icon", "image-png", "macos-private-api"] }
+tauri-plugin-notification = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-single-instance = "2"
+tauri-plugin-dialog = "2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSGeometry", "NSArray", "NSString", "NSThread"] }
+objc2-app-kit = { version = "0.3", features = [
+    "NSAlert",
+    "NSApplication",
+    "NSEvent",
+    "NSGraphics",
+    "NSPanel",
+    "NSResponder",
+    "NSRunningApplication",
+    "NSScreen",
+    "NSView",
+    "NSWindow",
+] }
+
+[dev-dependencies]
+tempfile = "3"

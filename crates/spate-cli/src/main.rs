@@ -597,6 +597,7 @@ mod tests {
             error: None,
             created_at: 0,
             finished_at: None,
+            source: None,
         }
     }
 
