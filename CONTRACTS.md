@@ -45,6 +45,10 @@ Request: `{"id": 1, "method": "add", "params": {...}}` → Response: `{"id": 1, 
 `AddRequest`: `{url, headers: [[name, value]], filename?, referrer?, size_hint?, mime?, source: "brave" | "cli" | "paste", kind: "file" | "media"}`.
 `kind: "media"` is accepted but answered with error code `not_supported` until v2.
 
+Error codes: `not_supported`, `unknown_method`, `bad_request`, `not_found` (no such job), `bad_state` (e.g. pause a finished job, remove a running one), `internal`, `link_expired` (in a failed job's `error`).
+
+`subscribe` first pushes the current state of every job right after `{}`, so a new window starts complete.
+
 `JobView`: `{id, url, filename, path?, state: "queued"|"running"|"paused"|"done"|"failed", total?, downloaded, speed_bps, eta_secs?, connections, segments: [{start, end, pos, active}], error?, created_at, finished_at?}`. Segment ranges are `[start, end)`.
 
 `cancel` stops the job, deletes its `.spate-part` and state files, and leaves it in the history as `state: "failed", error: "cancelled"`. `remove` drops a finished or failed job from the history (never deletes a finished file) and emits `removed`.

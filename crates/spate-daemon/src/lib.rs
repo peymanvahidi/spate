@@ -8,8 +8,13 @@
 //! let handle = spate_daemon::Daemon::start(spate_daemon::Config::default()).await?;
 //! let mut events = handle.subscribe();
 //! # let req: spate_proto::AddRequest = unimplemented!();
-//! let id = handle.add(req).await.map_err(|e| anyhow::anyhow!("{}: {}", e.code, e.message))?;
-//! while let Ok(ev) = events.recv().await { println!("{} {:?}", ev.job.id, ev.job.state); }
+//! let id = handle.add(req).await?;
+//! while let Ok(ev) = events.recv().await {
+//!     match ev {
+//!         spate_daemon::DaemonEvent::Job(job) => println!("{} {:?}", job.id, job.state),
+//!         spate_daemon::DaemonEvent::Removed(id) => println!("{id} removed"),
+//!     }
+//! }
 //! handle.shutdown().await;
 //! # Ok(()) }
 //! ```

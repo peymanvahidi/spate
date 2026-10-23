@@ -144,6 +144,14 @@ pub struct RpcError {
     pub message: String,
 }
 
+impl std::fmt::Display for RpcError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.code, self.message)
+    }
+}
+
+impl std::error::Error for RpcError {}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RpcResponse {
     pub id: u64,
