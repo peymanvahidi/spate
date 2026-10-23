@@ -49,7 +49,7 @@ Error codes: `not_supported`, `unknown_method`, `bad_request`, `not_found` (no s
 
 `subscribe` first pushes the current state of every job right after `{}`, so a new window starts complete.
 
-`JobView`: `{id, url, filename, path?, state: "queued"|"running"|"paused"|"done"|"failed", total?, downloaded, speed_bps, eta_secs?, connections, segments: [{start, end, pos, active}], error?, created_at, finished_at?}`. Segment ranges are `[start, end)`.
+`JobView`: `{id, url, filename, path?, state: "queued"|"running"|"paused"|"done"|"failed", total?, downloaded, speed_bps, eta_secs?, connections, segments: [{start, end, pos, active}], error?, created_at, finished_at?}`. Segment ranges are `[start, end)`. `source` (`"brave"|"cli"|"paste"`, may be absent for old jobs) tells the app which jobs get a capture card.
 
 `cancel` stops the job, deletes its `.spate-part` and state files, and leaves it in the history as `state: "failed", error: "cancelled"`. `remove` drops a finished or failed job from the history (never deletes a finished file) and emits `removed`.
 
