@@ -7,6 +7,11 @@ license.workspace = true
 
 [dependencies]
 spate-proto.workspace = true
+spate-core.workspace = true
+anyhow.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+clap = { version = "4", features = ["derive"] }
 
 [[bin]]
 name = "spate"
