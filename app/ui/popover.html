@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Spate</title>
+  <link rel="stylesheet" href="css/base.css">
+  <link rel="stylesheet" href="css/popover.css">
+</head>
+<body>
+  <div class="menubar preview-only" aria-hidden="true">
+    <span class="mb-item mb-on" id="mb-icon"></span>
+    <span class="mb-clock">Fri 24 Oct 10:41</span>
+  </div>
+  <main class="panel" id="panel" aria-label="Spate downloads">
+    <header class="pop-head">
+      <div class="brand">
+        <span class="brand-mark" id="brand-mark"></span>
+        <span class="brand-name">Spate</span>
+      </div>
+      <canvas class="graph head-spark" id="head-spark" aria-hidden="true"></canvas>
+      <div class="total num" id="total" aria-live="off" title="Total speed"></div>
+    </header>
+    <div class="pop-body" id="body">
+      <section id="sec-active" aria-labelledby="h-active">
+        <h2 class="sec-title" id="h-active">Downloads</h2>
+        <div class="list" id="active" role="listbox" aria-label="Downloads"></div>
+      </section>
+      <section id="sec-done" aria-labelledby="h-done">
+        <h2 class="sec-title" id="h-done">Recently finished</h2>
+        <div class="list" id="done" role="list" aria-label="Recently finished"></div>
+      </section>
+      <div class="empty" id="empty" hidden>
+        <div class="empty-mark" id="empty-mark"></div>
+        <div>No downloads</div>
+        <div class="faint">Downloads from Brave appear here. Paste a link below to add one.</div>
+      </div>
+    </div>
+    <footer class="pop-foot">
+      <label class="paste">
+        <span class="paste-icon" id="paste-icon"></span>
+        <input class="field" id="paste" type="text" placeholder="Paste a link…  ⌘V" aria-label="Paste a link to download" spellcheck="false" autocomplete="off">
+      </label>
+      <span id="foot-buttons"></span>
+    </footer>
+  </main>
+  <script type="module" src="js/popover.js"></script>
+</body>
+</html>

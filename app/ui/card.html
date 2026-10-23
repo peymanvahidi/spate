@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Spate — New download</title>
+  <link rel="stylesheet" href="css/base.css">
+  <link rel="stylesheet" href="css/card.css">
+</head>
+<body>
+  <div class="menubar preview-only" aria-hidden="true"><span class="mb-clock">Fri 24 Oct 10:41</span></div>
+  <article class="card" id="card" role="dialog" aria-labelledby="name" aria-describedby="sub">
+    <button class="ib round close" id="close" type="button" aria-label="Hide" title="Hide"></button>
+    <div class="top">
+      <div id="icon"></div>
+      <div class="titles">
+        <div class="name ellipsis" id="name">…</div>
+        <div class="sub ellipsis" id="sub">
+          <span id="size"></span><span class="dot">·</span><span class="dest" id="dest" title="Destination folder"></span>
+          <button class="link" id="change" type="button">Change</button>
+        </div>
+      </div>
+    </div>
+    <canvas class="segbar card-bar" id="bar" aria-hidden="true"></canvas>
+    <div class="bottom">
+      <canvas class="graph spark" id="spark" aria-hidden="true"></canvas>
+      <div class="stats" id="stats" aria-live="polite"></div>
+      <div class="buttons">
+        <button class="btn plain" id="cancel" type="button">Cancel</button>
+        <button class="btn primary start" id="start" type="button" aria-label="Start now">
+          <svg class="ring" viewBox="0 0 16 16" aria-hidden="true"><circle class="ring-track" cx="8" cy="8" r="6"/><circle class="ring-fill" cx="8" cy="8" r="6"/></svg>
+          <span id="start-label">Start</span>
+        </button>
+      </div>
+    </div>
+  </article>
+  <script type="module" src="js/card.js"></script>
+</body>
+</html>

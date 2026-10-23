@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Spate</title>
+  <link rel="stylesheet" href="css/base.css">
+  <link rel="stylesheet" href="css/main.css">
+</head>
+<body>
+  <div class="window" id="window">
+    <aside class="sidebar" aria-label="Filters">
+      <div class="titlebar-space" data-tauri-drag-region>
+        <span class="traffic preview-only" aria-hidden="true"><i></i><i></i><i></i></span>
+      </div>
+      <nav id="nav-state" class="nav" aria-label="Status"></nav>
+      <div class="nav-title">Kinds</div>
+      <nav id="nav-kind" class="nav" aria-label="File kinds"></nav>
+      <div class="side-foot">
+        <canvas class="graph side-graph" id="side-graph" aria-hidden="true"></canvas>
+        <div class="side-speed num" id="side-speed"></div>
+        <div class="side-dest faint" title="Download folder">~/Downloads/Spate</div>
+      </div>
+    </aside>
+    <section class="content">
+      <header class="toolbar" data-tauri-drag-region>
+        <div class="title-block" data-tauri-drag-region>
+          <h1 id="title">All Downloads</h1>
+          <div class="subtitle" id="subtitle"></div>
+        </div>
+        <div class="tools" id="tools"></div>
+        <label class="search">
+          <span class="search-icon" id="search-icon"></span>
+          <input class="field" id="search" type="search" placeholder="Search" aria-label="Search downloads" spellcheck="false" autocomplete="off">
+        </label>
+      </header>
+      <form class="addbar" id="addbar" hidden>
+        <span class="addbar-icon" id="addbar-icon"></span>
+        <input class="field" id="add-url" type="text" placeholder="https://… — paste a link to download" aria-label="Link to download" spellcheck="false" autocomplete="off">
+        <button class="btn plain" type="button" id="add-cancel">Cancel</button>
+        <button class="btn primary" type="submit">Download</button>
+      </form>
+      <div class="list-head" aria-hidden="true">
+        <span></span><span>Name</span><span>Progress</span><span class="r">Speed</span><span class="r">Time left</span><span></span>
+      </div>
+      <div class="list" id="list" role="listbox" aria-label="Downloads"></div>
+      <div class="empty" id="empty" hidden></div>
+    </section>
+  </div>
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
