@@ -357,3 +357,15 @@ store.init().then(() => {
   }
 });
 store.subscribe(render);
+// Removed (maybe in another window): close its detail and drop the selection; render() drops the row.
+store.onRemoved((id) => {
+  const it = items.get(id);
+  if (it) {
+    it.bar.destroy();
+    it.detail?.destroy();
+    it.el.remove();
+    items.delete(id);
+  }
+  open.delete(id);
+  if (selected === id) selected = null;
+});

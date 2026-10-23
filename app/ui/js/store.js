@@ -7,6 +7,8 @@ const jobs = new Map();
 const history = new Map(); // id -> [{t (ms), v (bps)}]
 const segRates = new Map(); // id -> Map(start -> {pos, t, bps})
 const listeners = new Set();
+const removedListeners = new Set();
+const gone = new Set(); // removed ids: a late "job" event must not bring one back
 const HISTORY_MS = 5 * 60 * 1000;
 let ready = null;
 let pending = new Set();
@@ -17,6 +19,7 @@ function now() {
 }
 
 function ingest(job) {
+  if (gone.has(job.id)) return false;
   const t = now();
   jobs.set(job.id, job);
   if (job.state === 'running') {
@@ -47,6 +50,7 @@ function ingest(job) {
     const h = history.get(job.id);
     if (h && h.length && h[h.length - 1].v !== 0) h.push({ t, v: 0 });
   }
+  return true;
 }
 
 function schedule(id) {
@@ -68,9 +72,10 @@ export function init() {
     ready = api.list().then((list) => {
       for (const j of list) ingest(j);
       api.onJob((j) => {
-        ingest(j);
-        schedule(j.id);
+        if (ingest(j)) schedule(j.id);
       });
+      // Removed in this or any other window.
+      api.onRemoved((id) => forget(id));
       schedule('*');
     });
   }
@@ -87,11 +92,26 @@ export const get = (id) => jobs.get(id);
 export const all = () => [...jobs.values()];
 export const speedHistory = (id) => history.get(id) || [];
 
-/** Locally drop a job (after api.remove resolved). */
+/** cb(id) when a job leaves the history (here or in another window). Returns an unsubscribe fn. */
+export function onRemoved(cb) {
+  removedListeners.add(cb);
+  return () => removedListeners.delete(cb);
+}
+
+/** Drop a job: after api.remove resolved, or on the "removed" event. Idempotent. */
 export function forget(id) {
+  if (id == null || gone.has(id)) return;
+  gone.add(id);
   jobs.delete(id);
   history.delete(id);
   segRates.delete(id);
+  for (const cb of removedListeners) {
+    try {
+      cb(id);
+    } catch (e) {
+      console.error(e);
+    }
+  }
   schedule('*');
 }
 

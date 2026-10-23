@@ -220,5 +220,14 @@ store.init().then(() => {
   startCountdown();
 });
 store.subscribe((ids) => {
+  if (phase === 'gone') return;
   if (ids.has('*') || ids.has(jobId)) render();
+});
+// The card's job was removed (maybe in another window): nothing left to show.
+store.onRemoved((id) => {
+  if (id !== jobId) return;
+  hovering = false;
+  clearTimeout(countdownTimer);
+  clearTimeout(dismissTimer);
+  dismiss();
 });

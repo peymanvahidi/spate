@@ -330,6 +330,7 @@ export function view(job) {
 export function createMock({ jobs = sampleJobs(), tickMs = TICK_MS, maxActive = 2, autoTick = true } = {}) {
   const byId = new Map(jobs.map((j) => [j.id, j]));
   const listeners = new Set();
+  const removedListeners = new Set();
   let timer = null;
   let nextId = 100;
 
@@ -467,7 +468,15 @@ export function createMock({ jobs = sampleJobs(), tickMs = TICK_MS, maxActive = 
       return later({});
     },
     async remove(id) {
-      byId.delete(id);
+      if (byId.delete(id)) {
+        for (const cb of removedListeners) {
+          try {
+            cb(id);
+          } catch (e) {
+            console.error(e);
+          }
+        }
+      }
       return later({});
     },
     async reveal(id) {
@@ -482,6 +491,11 @@ export function createMock({ jobs = sampleJobs(), tickMs = TICK_MS, maxActive = 
       ensureTimer();
       listeners.add(cb);
       return () => listeners.delete(cb);
+    },
+    /** cb(job id) after remove, like the shell's "removed" event. Returns an unsubscribe fn. */
+    onRemoved(cb) {
+      removedListeners.add(cb);
+      return () => removedListeners.delete(cb);
     },
     stop() {
       clearInterval(timer);

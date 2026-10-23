@@ -36,6 +36,21 @@ const BUF_SIZE: usize = 256 * 1024;
 const STALL_TIMEOUT: Duration = Duration::from_secs(15);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long a segment request may wait for its response headers (at least: a server that was
+/// slow to answer the probe gets 4× that latency, up to `RESPONSE_TIMEOUT`). The probe already proved the server answers, so a range request that
+/// gets no headers for this long is treated as a dead connection.
+const HEADER_TIMEOUT: Duration = Duration::from_secs(8);
+/// End game: a connection that has received nothing (not even headers) for this long gets a
+/// duplicate request racing it for the same range, when a connection is free.
+const QUIET_FOR: Duration = Duration::from_secs(3);
+/// End game: a segment with at most this much left whose connection needs more than
+/// `ENDGAME_SLOW` to finish also gets a duplicate request (larger remainders get split instead).
+const ENDGAME_BYTES: u64 = 4 * MIB;
+const ENDGAME_SLOW: Duration = Duration::from_secs(2);
+/// A connection must have been running this long before end game considers it slow.
+const ENDGAME_MIN_AGE: Duration = Duration::from_secs(1);
+/// After a duplicate request ended without finishing its segment, wait this long before another.
+const DUP_RETRY_AFTER: Duration = Duration::from_secs(2);
 const MAX_RETRIES: u32 = 10;
 const MAX_RETRY_AFTER: Duration = Duration::from_secs(300);
 const TICK: Duration = Duration::from_millis(100);
@@ -132,8 +147,17 @@ struct Seg {
     progress_at: Instant,
     /// Asks the worker to stop after its current chunk (used to drop one connection).
     yield_req: bool,
-    /// Wakes the worker to drop its connection and reconnect (a stalled tail).
+    /// Wakes the worker to drop its connection and reconnect (a stalled tail), or to notice
+    /// that a duplicate request finished the segment.
     kick: Arc<tokio::sync::Notify>,
+    /// When the current connection was started.
+    started_at: Instant,
+    /// A duplicate request (end game) is racing the segment's connection.
+    dup: bool,
+    /// Wakes the duplicate request to stop (the segment was finished by its connection).
+    dup_kick: Arc<tokio::sync::Notify>,
+    /// No new duplicate before this (the last one ended without finishing the segment).
+    dup_not_before: Option<Instant>,
 }
 
 impl Seg {
@@ -153,6 +177,10 @@ impl Seg {
             progress_at: Instant::now(),
             yield_req: false,
             kick: Arc::new(tokio::sync::Notify::new()),
+            started_at: Instant::now(),
+            dup: false,
+            dup_kick: Arc::new(tokio::sync::Notify::new()),
+            dup_not_before: None,
         }
     }
     fn done(&self) -> bool {
@@ -183,6 +211,10 @@ struct Ctx {
     headers: HeaderMap,
     if_range: Option<HeaderValue>,
     ranged: bool,
+    /// Response-header timeout for segment requests.
+    header_timeout: Duration,
+    /// Silence after which a connection gets a duplicate request (end game).
+    quiet_after: Duration,
     file: File,
     shared: Mutex<Shared>,
 }
@@ -464,7 +496,9 @@ async fn wait_stop(rx: &mut watch::Receiver<bool>) {
     }
 }
 
-/// Write the buffer at `*off` and advance the segment's `flushed`.
+/// Write the buffer at `*off` and advance the segment's `flushed`. A duplicate request (end
+/// game) may be writing the same bytes of the same segment: both started at or below `flushed`,
+/// so whichever is ahead defines how much is contiguous on disk, and `flushed` never moves back.
 fn flush(ctx: &Ctx, idx: usize, buf: &mut Vec<u8>, off: &mut u64) -> Result<()> {
     if buf.is_empty() {
         return Ok(());
@@ -472,8 +506,37 @@ fn flush(ctx: &Ctx, idx: usize, buf: &mut Vec<u8>, off: &mut u64) -> Result<()> 
     ctx.file.write_all_at(buf, *off).context("writing to disk")?;
     *off += buf.len() as u64;
     buf.clear();
-    ctx.lock().segs[idx].flushed = *off;
+    let mut s = ctx.lock();
+    let g = &mut s.segs[idx];
+    g.flushed = g.flushed.max((*off).min(g.end));
     Ok(())
+}
+
+/// Send a range request for `[from, end)` of the file, giving up after the header timeout.
+/// `Err` carries the outcome to return: `Cancelled` when stopped or kicked.
+async fn send_range(
+    ctx: &Ctx,
+    from: u64,
+    end: u64,
+    stop: &mut watch::Receiver<bool>,
+    kick: &tokio::sync::Notify,
+) -> std::result::Result<reqwest::Response, Outcome> {
+    let mut req = ctx.client.get(&ctx.url).headers(ctx.headers.clone());
+    if ctx.ranged {
+        req = req.header(header::RANGE, format!("bytes={from}-{}", end - 1));
+        if let Some(v) = &ctx.if_range {
+            req = req.header(header::IF_RANGE, v.clone());
+        }
+    }
+    tokio::select! {
+        r = tokio::time::timeout(ctx.header_timeout, req.send()) => match r {
+            Err(_) => Err(refused(format!("no response headers for {} s", ctx.header_timeout.as_secs()))),
+            Ok(Err(e)) => Err(refused(format!("request failed: {}", chain(&e)))),
+            Ok(Ok(r)) => Ok(r),
+        },
+        _ = wait_stop(stop) => Err(Outcome::Cancelled),
+        _ = kick.notified() => Err(Outcome::Cancelled),
+    }
 }
 
 /// Flush what we have, then report `o` (or the write error).
@@ -496,24 +559,13 @@ async fn worker(
     };
     let resp = match initial {
         Some(r) => r,
-        None => {
-            let mut req = ctx.client.get(&ctx.url).headers(ctx.headers.clone());
-            if ctx.ranged {
-                req = req.header(header::RANGE, format!("bytes={start_pos}-{}", end - 1));
-                if let Some(v) = &ctx.if_range {
-                    req = req.header(header::IF_RANGE, v.clone());
-                }
-            }
-            tokio::select! {
-                r = tokio::time::timeout(RESPONSE_TIMEOUT, req.send()) => match r {
-                    Err(_) => return refused("timed out waiting for the server".into()),
-                    Ok(Err(e)) => return refused(format!("request failed: {}", chain(&e))),
-                    Ok(Ok(r)) => r,
-                },
-                _ = wait_stop(&mut stop) => return Outcome::Cancelled,
-                _ = kick.notified() => return retry("reconnecting a slow connection"),
-            }
-        }
+        None => match send_range(&ctx, start_pos, end, &mut stop, &kick).await {
+            Ok(r) => r,
+            // Kicked before any headers: a duplicate finished the segment, or reconnect.
+            Err(Outcome::Cancelled) if ctx.lock().segs[idx].done() => return Outcome::Finished,
+            Err(Outcome::Cancelled) if !*stop.borrow() => return retry("reconnecting a slow connection"),
+            Err(o) => return o,
+        },
     };
     let status = resp.status().as_u16();
     match status {
@@ -545,7 +597,12 @@ async fn worker(
             n = tokio::time::timeout(STALL_TIMEOUT, stream.next()) => n,
             _ = wait_stop(&mut stop) => return flush_then(&ctx, idx, &mut buf, &mut off, Outcome::Cancelled),
             _ = kick.notified() => {
-                return flush_then(&ctx, idx, &mut buf, &mut off, retry("reconnecting a slow connection"));
+                let o = if ctx.lock().segs[idx].done() {
+                    Outcome::Finished // a duplicate request got there first
+                } else {
+                    retry("reconnecting a slow connection")
+                };
+                return flush_then(&ctx, idx, &mut buf, &mut off, o);
             }
         };
         let chunk = match next {
@@ -577,7 +634,7 @@ async fn worker(
             let take = (chunk.len() as u64).min(end_now.saturating_sub(cur)) as usize;
             buf.extend_from_slice(&chunk[..take]);
             cur += take as u64;
-            s.segs[idx].pos = cur;
+            s.segs[idx].pos = s.segs[idx].pos.max(cur);
             s.bytes_in += take as u64;
             (end_now, s.segs[idx].yield_req)
         };
@@ -592,6 +649,73 @@ async fn worker(
             }
         }
         if cur >= end_now {
+            return Outcome::Finished;
+        }
+    }
+}
+
+/// End game: a second request for the rest of segment `idx` (from its `flushed` mark), racing
+/// the segment's own connection. Whichever reaches the end first wins; the other is woken and
+/// stops. Both write the same bytes to the same place, so the race is harmless. The outcome is
+/// informational only: the segment's own connection reports errors.
+async fn dup_worker(ctx: Arc<Ctx>, idx: usize, mut stop: watch::Receiver<bool>) -> Outcome {
+    let (from, end, kick) = {
+        let s = ctx.lock();
+        (s.segs[idx].flushed, s.segs[idx].end, s.segs[idx].dup_kick.clone())
+    };
+    if from >= end {
+        return Outcome::Finished;
+    }
+    let resp = match send_range(&ctx, from, end, &mut stop, &kick).await {
+        Ok(r) => r,
+        Err(o) => return o,
+    };
+    match resp.status().as_u16() {
+        206 => match parse_content_range(resp.headers()) {
+            Some((Some(s), _)) if s == from => {}
+            _ => return retry("unexpected Content-Range"),
+        },
+        s => return retry(format!("HTTP {s}")),
+    }
+    let mut stream = resp.bytes_stream();
+    let mut buf: Vec<u8> = Vec::with_capacity(BUF_SIZE);
+    let (mut off, mut cur) = (from, from);
+    loop {
+        let next = tokio::select! {
+            n = tokio::time::timeout(STALL_TIMEOUT, stream.next()) => n,
+            _ = wait_stop(&mut stop) => return flush_then(&ctx, idx, &mut buf, &mut off, Outcome::Cancelled),
+            _ = kick.notified() => return flush_then(&ctx, idx, &mut buf, &mut off, Outcome::Cancelled),
+        };
+        let chunk = match next {
+            Err(_) => return flush_then(&ctx, idx, &mut buf, &mut off, retry("stalled")),
+            Ok(Some(Err(e))) => {
+                return flush_then(&ctx, idx, &mut buf, &mut off, retry(format!("connection error: {}", chain(&e))))
+            }
+            Ok(None) => return flush_then(&ctx, idx, &mut buf, &mut off, retry("connection closed early")),
+            Ok(Some(Ok(b))) => b,
+        };
+        let end_now = {
+            let mut s = ctx.lock();
+            let g = &mut s.segs[idx];
+            // The end can shrink when the segment is split.
+            let end_now = g.end;
+            if g.flushed >= end_now {
+                return Outcome::Cancelled; // the segment's own connection won
+            }
+            let take = (chunk.len() as u64).min(end_now.saturating_sub(cur)) as usize;
+            buf.extend_from_slice(&chunk[..take]);
+            cur += take as u64;
+            g.pos = g.pos.max(cur);
+            s.bytes_in += take as u64;
+            end_now
+        };
+        if buf.len() >= BUF_SIZE || cur >= end_now {
+            if let Err(e) = flush(&ctx, idx, &mut buf, &mut off) {
+                return Outcome::Fatal(e);
+            }
+        }
+        if cur >= end_now {
+            ctx.lock().segs[idx].kick.notify_one(); // wake the losing connection
             return Outcome::Finished;
         }
     }
@@ -682,11 +806,23 @@ fn host_of(url: &str) -> Option<String> {
     reqwest::Url::parse(url).ok().and_then(|u| u.host_str().map(|h| h.to_string()))
 }
 
-async fn stop_all(stop_tx: &watch::Sender<bool>, tasks: &mut JoinSet<(usize, Outcome)>, ctx: &Ctx) {
+/// Which kind of request a finished task ran.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Role {
+    /// The segment's own connection.
+    Main,
+    /// An end-game duplicate racing it.
+    Dup,
+}
+
+type Tasks = JoinSet<(usize, Role, Outcome)>;
+
+async fn stop_all(stop_tx: &watch::Sender<bool>, tasks: &mut Tasks, ctx: &Ctx) {
     let _ = stop_tx.send(true);
     while tasks.join_next().await.is_some() {}
     for s in ctx.lock().segs.iter_mut() {
         s.active = false;
+        s.dup = false;
         s.pos = s.flushed;
     }
 }
@@ -702,11 +838,14 @@ enum SlowAction {
 
 /// Slow-connection stealing. Tracks how long each active connection has been below
 /// `SLOW_FRACTION` of the median, or has received nothing after its first bytes (a stall; the
-/// median is no help when several stall at once); once one has been for `SLOW_FOR` and a
-/// connection is free
-/// (`free`: idle or could be added), the back half of its remaining range becomes a new inactive
-/// segment for the free connection to pick up. When the remainder is too small to split (a
-/// stalled tail), the connection is restarted instead of waiting out the 15 s stall timeout.
+/// median is no help when several stall at once).
+///
+/// A stalled connection (no bytes for `SLOW_FOR`) is restarted right away, free connection or
+/// not: it holds its own slot, and splitting it would leave it holding the front half of its
+/// range while it stays dead. A slow one, once it has been slow for `SLOW_FOR` and a connection
+/// is free (`free`: idle or could be added), loses the back half of its remaining range to a new
+/// inactive segment for the free connection to pick up; when the remainder is too small to split,
+/// it is restarted instead of waiting out the 15 s stall timeout.
 fn steal_from_slow(s: &mut Shared, now: Instant, median_speed: &mut f64, free: bool) -> SlowAction {
     let active: Vec<usize> = (0..s.segs.len()).filter(|&i| s.segs[i].active && !s.segs[i].done()).collect();
     if active.len() >= 2 {
@@ -715,6 +854,7 @@ fn steal_from_slow(s: &mut Shared, now: Instant, median_speed: &mut f64, free: b
     }
     let reference = *median_speed;
     let mut victim = None;
+    let mut stalled_victim = None;
     for &i in &active {
         let g = &mut s.segs[i];
         if reference > 0.0 && g.speed < SLOW_FRACTION * reference {
@@ -723,11 +863,27 @@ fn steal_from_slow(s: &mut Shared, now: Instant, median_speed: &mut f64, free: b
             g.slow_since = None;
         }
         let slow = g.slow_since.is_some_and(|t| now - t >= SLOW_FOR);
-        // Waiting for the first byte is not a stall (slow servers take a while to answer).
+        // Waiting for the first byte is not a stall (slow servers take a while to answer; the
+        // header timeout and end game cover a connection that never answers).
         let stalled = g.pos > g.spawn_pos && now - g.progress_at >= SLOW_FOR;
+        if stalled && stalled_victim.is_none() {
+            stalled_victim = Some(i);
+        }
         if (slow || stalled) && victim.is_none() {
             victim = Some(i);
         }
+    }
+    if let Some(i) = stalled_victim {
+        let g = &mut s.segs[i];
+        debug(format_args!(
+            "segment {i} received nothing for {:.0} s with {} bytes left: reconnecting",
+            (now - g.progress_at).as_secs_f64(),
+            g.end.saturating_sub(g.pos)
+        ));
+        g.slow_since = None;
+        g.progress_at = now;
+        g.kick.notify_one();
+        return SlowAction::Reconnect;
     }
     let Some(i) = victim.filter(|_| free) else { return SlowAction::None };
     let g = &mut s.segs[i];
@@ -752,6 +908,29 @@ fn steal_from_slow(s: &mut Shared, now: Instant, median_speed: &mut f64, free: b
     SlowAction::Split
 }
 
+/// End game: the active segment that most deserves a duplicate request, if any. Candidates have
+/// no duplicate yet and either have received nothing for `quiet_after` (a dead connection, or one
+/// still waiting for headers) or have at most `ENDGAME_BYTES` left and need more than
+/// `ENDGAME_SLOW` at their current speed. The one with the most time left wins.
+fn endgame_pick(s: &Shared, now: Instant, quiet_after: Duration) -> Option<usize> {
+    let mut best: Option<(usize, f64)> = None;
+    for (i, g) in s.segs.iter().enumerate() {
+        if !g.active || g.done() || g.dup || g.end == u64::MAX || g.dup_not_before.is_some_and(|t| t > now) {
+            continue;
+        }
+        let left = g.end.saturating_sub(g.pos) as f64;
+        let time_left = if g.speed > 0.0 { left / g.speed } else { f64::INFINITY };
+        let quiet = now - g.progress_at >= quiet_after;
+        let behind = g.end - g.flushed <= ENDGAME_BYTES
+            && now - g.started_at >= ENDGAME_MIN_AGE
+            && time_left > ENDGAME_SLOW.as_secs_f64();
+        if (quiet || behind) && best.is_none_or(|(_, t)| time_left > t) {
+            best = Some((i, time_left));
+        }
+    }
+    best.map(|(i, _)| i)
+}
+
 /// Ask the slowest active connection to stop after its current chunk; its segment goes back to
 /// the pool for the next free connection.
 fn drop_one_connection(s: &mut Shared) {
@@ -773,10 +952,15 @@ async fn run_once(job: &Job, progress: &Arc<Mutex<Snapshot>>, cancel: &watch::Re
     let client = build_client()?;
     let mut headers = build_headers(&job.headers);
     let mut user_cancel = cancel.clone();
+    let probe_started = Instant::now();
     let p = tokio::select! {
         p = probe(&client, &job.url, &mut headers) => p?,
         _ = wait_stop(&mut user_cancel) => return Err(Paused.into()),
     };
+    // A server that took long to answer the probe gets proportionally more patience.
+    let probe_latency = probe_started.elapsed();
+    let header_timeout = (probe_latency * 4).clamp(HEADER_TIMEOUT, RESPONSE_TIMEOUT);
+    let quiet_after = (probe_latency * 2).clamp(QUIET_FOR, RESPONSE_TIMEOUT);
 
     let filename = job
         .filename
@@ -864,12 +1048,14 @@ async fn run_once(job: &Job, progress: &Arc<Mutex<Snapshot>>, cancel: &watch::Re
         headers: seg_headers,
         if_range,
         ranged: p.ranged,
+        header_timeout,
+        quiet_after,
         file,
         shared: Mutex::new(Shared { segs, bytes_in: 0 }),
     });
     let mut initial_response = p.response;
     let (stop_tx, stop_rx) = watch::channel(false);
-    let mut tasks: JoinSet<(usize, Outcome)> = JoinSet::new();
+    let mut tasks: Tasks = JoinSet::new();
     let mut cancelled = false;
     let mut cancel_closed = false;
     let mut tick = tokio::time::interval(TICK);
@@ -918,7 +1104,23 @@ async fn run_once(job: &Job, progress: &Arc<Mutex<Snapshot>>, cancel: &watch::Re
                             not_before: g.not_before,
                         })
                         .collect();
-                    let Some(pk) = util::pick(&infos, now, MIN_PIECE, ctx.ranged) else { break };
+                    let Some(pk) = util::pick(&infos, now, MIN_PIECE, ctx.ranged) else {
+                        // Nothing to resume or split: end game.
+                        let Some(idx) = endgame_pick(&s, now, ctx.quiet_after).filter(|_| ctx.ranged) else { break };
+                        let g = &mut s.segs[idx];
+                        g.dup = true;
+                        g.dup_kick = Arc::new(tokio::sync::Notify::new());
+                        debug(format_args!(
+                            "end game: duplicate request for segment {idx} ({} bytes left, {:.0} B/s, quiet {:.1} s)",
+                            g.end - g.flushed,
+                            g.speed,
+                            (now - g.progress_at).as_secs_f64()
+                        ));
+                        drop(s);
+                        let (c, rx) = (ctx.clone(), stop_rx.clone());
+                        tasks.spawn(async move { (idx, Role::Dup, dup_worker(c, idx, rx).await) });
+                        continue;
+                    };
                     let idx = match pk {
                         Pick::Resume(i) => i,
                         Pick::Split(i, at) => s.split(i, at),
@@ -931,6 +1133,7 @@ async fn run_once(job: &Job, progress: &Arc<Mutex<Snapshot>>, cancel: &watch::Re
                     g.not_before = None;
                     g.slow_since = None;
                     g.progress_at = now;
+                    g.started_at = now;
                     g.yield_req = false;
                     g.speed = 0.0;
                     g.kick = Arc::new(tokio::sync::Notify::new());
@@ -938,7 +1141,7 @@ async fn run_once(job: &Job, progress: &Arc<Mutex<Snapshot>>, cancel: &watch::Re
                 };
                 let (c, rx, init) = (ctx.clone(), stop_rx.clone(), initial_response.take());
                 debug(format_args!("start segment {idx} want={want} running={}", tasks.len() + 1));
-                tasks.spawn(async move { (idx, worker(c, idx, init, rx).await) });
+                tasks.spawn(async move { (idx, Role::Main, worker(c, idx, init, rx).await) });
             }
         }
 
@@ -958,7 +1161,7 @@ async fn run_once(job: &Job, progress: &Arc<Mutex<Snapshot>>, cancel: &watch::Re
 
         tokio::select! {
             Some(joined) = tasks.join_next(), if !tasks.is_empty() => {
-                let (idx, outcome) = match joined {
+                let (idx, role, outcome) = match joined {
                     Ok(x) => x,
                     Err(e) => {
                         stop_all(&stop_tx, &mut tasks, &ctx).await;
@@ -966,6 +1169,22 @@ async fn run_once(job: &Job, progress: &Arc<Mutex<Snapshot>>, cancel: &watch::Re
                         bail!("download worker crashed: {e}");
                     }
                 };
+                if role == Role::Dup {
+                    // Errors are the segment's own connection's to report.
+                    let mut s = ctx.lock();
+                    let g = &mut s.segs[idx];
+                    g.dup = false;
+                    match &outcome {
+                        Outcome::Finished => debug(format_args!("end game: duplicate finished segment {idx} first")),
+                        Outcome::Cancelled => {}
+                        Outcome::Retry { why, .. } => {
+                            debug(format_args!("end game: duplicate for segment {idx} ended ({why})"));
+                            g.dup_not_before = Some(Instant::now() + DUP_RETRY_AFTER);
+                        }
+                        _ => g.dup_not_before = Some(Instant::now() + DUP_RETRY_AFTER),
+                    }
+                    continue;
+                }
                 {
                     let mut s = ctx.lock();
                     let g = &mut s.segs[idx];
@@ -973,6 +1192,9 @@ async fn run_once(job: &Job, progress: &Arc<Mutex<Snapshot>>, cancel: &watch::Re
                     g.pos = g.flushed;
                     g.yield_req = false;
                     g.slow_since = None;
+                    if g.dup && g.done() {
+                        g.dup_kick.notify_one(); // this connection won the race
+                    }
                     if !ctx.ranged && !matches!(outcome, Outcome::Finished) {
                         // No ranges: a broken stream starts over.
                         g.pos = 0;

@@ -161,8 +161,14 @@ test('mock backend: list, events, pause/resume/cancel/remove', async () => {
   assert.equal(seen.findLast((j) => j.id === iso.id).error, 'cancelled');
   const { job_id } = await m.add('https://example.com/files/big%20file.zip', { source: 'paste' });
   assert.ok((await m.list()).find((j) => j.id === job_id && j.filename === 'big file.zip'));
+  const removed = [];
+  const unR = m.onRemoved((id) => removed.push(id));
   await m.remove(job_id);
   assert.ok(!(await m.list()).find((j) => j.id === job_id));
+  assert.deepEqual(removed, [job_id], 'remove fires onRemoved with the job id');
+  await m.remove(job_id);
+  assert.deepEqual(removed, [job_id], 'removing an unknown id fires nothing');
+  unR();
   un();
   m.stop();
 });

@@ -730,6 +730,36 @@ impl Handle {
         Ok(())
     }
 
+    /// Record that a finished job's file now lives at `path` (the app moved it, e.g. "Change
+    /// folder"). Only for `done` jobs (`bad_state` otherwise); `path` must be absolute and name an
+    /// existing regular file (`bad_request` otherwise). Updates `path`, `filename` and `dir` in
+    /// the history and emits a `job` event. Never moves or touches the file itself.
+    pub async fn set_path(&self, id: &str, path: &Path) -> Result<(), RpcError> {
+        if !path.is_absolute() {
+            return Err(err("bad_request", "path must be absolute"));
+        }
+        let mut st = self.inner.state();
+        let e = st.find(id)?;
+        if e.row.state != JobState::Done {
+            return Err(err(E_BAD_STATE, format!("job is {}", db::state_str(e.row.state))));
+        }
+        match std::fs::metadata(path) {
+            Ok(m) if m.is_file() => {}
+            Ok(_) => return Err(err("bad_request", "path is not a regular file")),
+            Err(_) => return Err(err("bad_request", "no file at path")),
+        }
+        e.row.path = Some(path.to_path_buf());
+        if let Some(name) = path.file_name() {
+            e.row.filename = Some(name.to_string_lossy().into_owned());
+        }
+        if let Some(parent) = path.parent() {
+            e.row.dir = parent.to_path_buf();
+        }
+        self.inner.log.log(&format!("job {id} file moved"));
+        self.inner.changed(e);
+        Ok(())
+    }
+
     /// Pause every running job (state saved), stop the socket server and the ticker. Queued
     /// and running jobs come back as `paused` on the next start.
     pub async fn shutdown(&self) {
@@ -771,6 +801,11 @@ pub(crate) async fn dispatch(h: &Handle, method: &str, params: serde_json::Value
     struct JobId {
         job_id: String,
     }
+    #[derive(serde::Deserialize)]
+    struct SetPath {
+        job_id: String,
+        path: PathBuf,
+    }
     let job_id = |p: serde_json::Value| {
         serde_json::from_value::<JobId>(p).map(|j| j.job_id).map_err(|e| err("bad_request", format!("{e}")))
     };
@@ -785,6 +820,10 @@ pub(crate) async fn dispatch(h: &Handle, method: &str, params: serde_json::Value
         "resume" => h.resume(&job_id(params)?).await.map(|_| json!({})),
         "cancel" => h.cancel(&job_id(params)?).await.map(|_| json!({})),
         "remove" => h.remove(&job_id(params)?).await.map(|_| json!({})),
+        "set_path" => {
+            let p: SetPath = serde_json::from_value(params).map_err(|e| err("bad_request", format!("{e}")))?;
+            h.set_path(&p.job_id, &p.path).await.map(|_| json!({}))
+        }
         "subscribe" => Ok(json!({})), // the server starts the pushes
         other => Err(err("unknown_method", other.to_string())),
     }
@@ -855,6 +894,66 @@ mod tests {
         h.shutdown().await;
         let h = Daemon::start(cfg(dir.path())).await.unwrap();
         assert_eq!(h.list().len(), 2, "remove is persistent");
+        h.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn set_path_records_a_moved_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let moved_dir = dir.path().join("elsewhere");
+        std::fs::create_dir_all(&moved_dir).unwrap();
+        let moved = moved_dir.join("a (1).bin");
+        std::fs::write(&moved, b"data").unwrap();
+        {
+            let db = Db::open(&dir.path().join("spate.sqlite")).unwrap();
+            let mut base = JobRow {
+                id: "d".into(),
+                seq: 1,
+                url: "https://example.com/a.bin".into(),
+                headers: vec![],
+                had_secrets: false,
+                dir: dir.path().into(),
+                filename: Some("a.bin".into()),
+                source: "cli".into(),
+                state: JobState::Done,
+                total: Some(4),
+                downloaded: 4,
+                error: None,
+                created_ms: 1,
+                finished_at: Some(2),
+                path: Some(dir.path().join("a.bin")),
+            };
+            db.save_job(&base).unwrap();
+            base.id = "p".into();
+            base.seq = 2;
+            base.state = JobState::Paused;
+            base.path = None;
+            db.save_job(&base).unwrap();
+        }
+        let h = Daemon::start(cfg(dir.path())).await.unwrap();
+        let mut events = h.subscribe();
+        let code = |r: Result<serde_json::Value, RpcError>| r.unwrap_err().code;
+        let call = |params: serde_json::Value| dispatch(&h, "set_path", params);
+        assert_eq!(code(call(serde_json::json!({"job_id": "d"})).await), "bad_request");
+        assert_eq!(code(call(serde_json::json!({"job_id": "x", "path": moved})).await), E_NOT_FOUND);
+        assert_eq!(code(call(serde_json::json!({"job_id": "p", "path": moved})).await), E_BAD_STATE);
+        assert_eq!(code(call(serde_json::json!({"job_id": "d", "path": "rel/a.bin"})).await), "bad_request");
+        let missing = moved_dir.join("missing.bin");
+        assert_eq!(code(call(serde_json::json!({"job_id": "d", "path": missing})).await), "bad_request");
+        assert_eq!(code(call(serde_json::json!({"job_id": "d", "path": moved_dir})).await), "bad_request");
+        assert!(events.try_recv().is_err(), "failed calls emit nothing");
+
+        assert_eq!(call(serde_json::json!({"job_id": "d", "path": moved})).await.unwrap(), serde_json::json!({}));
+        let DaemonEvent::Job(ev) = events.try_recv().unwrap() else { panic!("expected a job event") };
+        assert_eq!((ev.id.as_str(), ev.path.as_deref()), ("d", Some(moved.as_path())));
+        assert_eq!(ev.filename, "a (1).bin");
+        assert_eq!(ev.state, JobState::Done);
+        h.shutdown().await;
+        // Persisted.
+        let h = Daemon::start(cfg(dir.path())).await.unwrap();
+        let d = h.get("d").unwrap();
+        assert_eq!(d.path.as_deref(), Some(moved.as_path()));
+        assert_eq!(d.filename, "a (1).bin");
         h.shutdown().await;
     }
 
