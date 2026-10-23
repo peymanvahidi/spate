@@ -26,6 +26,9 @@ spate_core::run(job: Job, progress: Arc<Mutex<Snapshot>>, cancel: tokio::sync::w
 - `Job` and `Snapshot` are defined in `spate-proto` (`Job`, `JobView` is built from `Snapshot` by the daemon).
 - Cancel = pause: state is saved; calling `run` again with the same job resumes.
 - On success returns the final path (already renamed, de-duplicated as `name (1).ext`, tagged, quarantined).
+- Errors the caller must tell apart (downcast the `anyhow::Error`): `spate_core::Paused` (cancel was requested; state saved) and `spate_core::LinkExpired { status }` (401/403/410: ask the extension for a fresh URL). Anything else is a failure.
+- The "Where from" referrer is taken from a `Referer` entry in `job.headers`.
+- `SegmentView` ranges are `[start, end)`.
 
 ## Daemon IPC (Unix socket, newline-delimited JSON)
 

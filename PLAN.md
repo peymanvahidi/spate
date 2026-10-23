@@ -5,7 +5,7 @@ Subagents build the pieces, each in its own git worktree/branch off `feat/engine
 
 | Phase | Piece | Owner | Directory | Depends on | Status |
 |---|---|---|---|---|---|
-| 1 | Download engine + `spate get` CLI | agent | `crates/spate-core`, `crates/spate-cli` | contracts | in progress |
+| 1 | Download engine + `spate get` CLI | agent | `crates/spate-core`, `crates/spate-cli` | contracts | merged |
 | 1 | Brave extension + native host | agent | `extension/`, `crates/spate-host` | contracts | merged |
 | 2 | Daemon: queue, SQLite history, socket server | agent | `crates/spate-daemon` | engine | todo |
 | 3 | Menu-bar app, capture card, main window (Tauri 2) | agent | `app/` | daemon | todo |

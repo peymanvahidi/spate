@@ -63,7 +63,7 @@ async fn real_main() -> Result<i32> {
     }
     let dir = dir.unwrap_or_else(spate_proto::default_download_dir);
     std::fs::create_dir_all(&dir)?;
-    let job = Job { url, headers: hdrs, dir, filename: output, max_connections: max_connections.max(1) };
+    let job = Job { url, headers: hdrs, dir, filename: output, max_connections: max_connections.max(1), start_connections: None };
 
     let progress = Arc::new(Mutex::new(Snapshot::default()));
     let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);

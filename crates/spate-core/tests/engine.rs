@@ -191,7 +191,7 @@ async fn start(st: Arc<Server>, name: &str) -> Option<String> {
 }
 
 fn job(url: &str, dir: &Path) -> Job {
-    Job { url: url.into(), headers: vec![], dir: dir.into(), filename: None, max_connections: 8 }
+    Job { url: url.into(), headers: vec![], dir: dir.into(), filename: None, max_connections: 8, start_connections: None }
 }
 
 async fn run(job: Job) -> anyhow::Result<PathBuf> {

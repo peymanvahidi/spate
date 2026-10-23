@@ -37,6 +37,10 @@ pub struct Job {
     pub filename: Option<String>,
     /// Upper bound on parallel connections (balanced mode = 8).
     pub max_connections: usize,
+    /// Starting connection count learned for this host (daemon's per-host memory).
+    /// `None` = use the size rule.
+    #[serde(default)]
+    pub start_connections: Option<usize>,
 }
 
 /// Live progress, written by the engine, read by the CLI/daemon.
@@ -55,6 +59,7 @@ pub struct Snapshot {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SegmentView {
     pub start: u64,
+    /// Exclusive: the segment covers `[start, end)`. For an unknown size, `end == pos`.
     pub end: u64,
     pub pos: u64,
     #[serde(default)]
