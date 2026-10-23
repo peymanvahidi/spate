@@ -93,6 +93,7 @@ dependencies = [
 name = "spate-host"
 version = "0.1.0"
 dependencies = [
+ "serde_json",
  "spate-proto",
 ]
 

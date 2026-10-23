@@ -1,0 +1,53 @@
+{
+  "manifest_version": 3,
+  "name": "Spate",
+  "short_name": "Spate",
+  "version": "0.1.0",
+  "description": "Hands big downloads from Brave to the Spate download accelerator and lists videos on the page.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA5wqL3goHkwIdGqunuqrkXnlPFRlJhFkdIVpnx7hSHY1FhFBUtpJrOcswT0/PBijHLjoPQmVcs7gyTgkv92EriRuwxcJNSudw9xcn0VQeq5Te15okstv9Ci/QlDA6AnGyFEwDxHuK16nxBaD6b7NJ+dZBvUJMlDUR3HQmgOVD/6J/XGvnThtjxfzDjl8F6lgAODKgOD0oQmS+rKq96HIjOIzhD9ZDMk9OLTkbNiOS3co5B59eKYwp9QchbKDZu33/LCcWokzMdBrXJ4XkRcCK8SIbk0scqfwyK2vOoQD0zBUOiIeKHRl+Vb2+RRbDKnQHmsxgTp4znyednYIhs5B3KQIDAQAB",
+  "minimum_chrome_version": "116",
+  "permissions": [
+    "downloads",
+    "nativeMessaging",
+    "cookies",
+    "storage",
+    "contextMenus",
+    "webRequest",
+    "tabs",
+    "scripting"
+  ],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["content.js"],
+      "run_at": "document_start",
+      "all_frames": true,
+      "match_about_blank": true
+    }
+  ],
+  "action": {
+    "default_title": "Spate",
+    "default_popup": "ui/popup.html",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
+  },
+  "options_ui": {
+    "page": "ui/options.html",
+    "open_in_tab": true
+  },
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  }
+}
