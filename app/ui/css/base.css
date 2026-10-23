@@ -1,0 +1,247 @@
+/* Spate — shared tokens and components. macOS-native, calm, light + dark. */
+
+:root {
+  color-scheme: light dark;
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", system-ui, sans-serif;
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+
+  --text: #1d1d1f;
+  --text-2: #6e6e73;
+  --text-3: #8a8a8e;
+  --bg: #ffffff;
+  --surface: rgba(246, 246, 248, 0.78);
+  --surface-solid: #f5f5f7;
+  --surface-raised: rgba(255, 255, 255, 0.7);
+  --sidebar: rgba(234, 234, 238, 0.72);
+  --sep: rgba(0, 0, 0, 0.09);
+  --sep-strong: rgba(0, 0, 0, 0.14);
+  --hover: rgba(0, 0, 0, 0.045);
+  --press: rgba(0, 0, 0, 0.08);
+  --selected: rgba(12, 122, 100, 0.11);
+  --selected-strong: #0C7A64;
+  --accent: #0C7A64;
+  --accent-hover: #0a6b58;
+  --on-accent: #ffffff;
+  --danger: #c4332b;
+  --danger-bg: rgba(196, 51, 43, 0.1);
+  --ok: #248a3d;
+  --field: rgba(0, 0, 0, 0.045);
+  --field-border: rgba(0, 0, 0, 0.1);
+  --btn: #ffffff;
+  --btn-border: rgba(0, 0, 0, 0.12);
+  --shadow-window: 0 0 0 0.5px rgba(0, 0, 0, 0.18), 0 10px 40px rgba(0, 0, 0, 0.18), 0 2px 8px rgba(0, 0, 0, 0.08);
+  --shadow-menu: 0 0 0 0.5px rgba(0, 0, 0, 0.15), 0 8px 28px rgba(0, 0, 0, 0.18);
+  --focus: 0 0 0 3px rgba(12, 122, 100, 0.35);
+
+  --seg-1: #0C7A64;
+  --seg-2: #2F6FA8;
+  --seg-3: #C9831F;
+  --seg-4: #7B5BA6;
+  --seg-track: rgba(0, 0, 0, 0.07);
+  --seg-done: #2f9d57;
+  --seg-fail: #b4372f;
+  --graph: #0C7A64;
+  --grid: rgba(0, 0, 0, 0.07);
+
+  --fi-paper: #ffffff;
+  --fi-fold: #ececf0;
+  --fi-edge: rgba(0, 0, 0, 0.2);
+
+  --wallpaper: radial-gradient(1200px 700px at 15% 10%, #a7d8cc 0%, transparent 60%),
+    radial-gradient(900px 700px at 90% 20%, #b8c9ec 0%, transparent 55%),
+    radial-gradient(900px 600px at 50% 100%, #f1d3a8 0%, transparent 60%), #dfe5ea;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not(.light) {
+    --text: #f5f5f7;
+    --text-2: #a1a1a6;
+    --text-3: #7c7c82;
+    --bg: #1e1e20;
+    --surface: rgba(36, 36, 40, 0.74);
+    --surface-solid: #262628;
+    --surface-raised: rgba(255, 255, 255, 0.06);
+    --sidebar: rgba(40, 40, 44, 0.7);
+    --sep: rgba(255, 255, 255, 0.09);
+    --sep-strong: rgba(255, 255, 255, 0.14);
+    --hover: rgba(255, 255, 255, 0.06);
+    --press: rgba(255, 255, 255, 0.1);
+    --selected: rgba(60, 196, 162, 0.16);
+    --selected-strong: #3CC4A2;
+    --accent: #1f9c80;
+    --accent-hover: #27ad8f;
+    --danger: #ff6b61;
+    --danger-bg: rgba(255, 107, 97, 0.14);
+    --ok: #4cd07d;
+    --field: rgba(255, 255, 255, 0.07);
+    --field-border: rgba(255, 255, 255, 0.1);
+    --btn: rgba(255, 255, 255, 0.12);
+    --btn-border: rgba(255, 255, 255, 0.08);
+    --shadow-window: 0 0 0 0.5px rgba(255, 255, 255, 0.14), 0 0 0 1px rgba(0, 0, 0, 0.6), 0 14px 44px rgba(0, 0, 0, 0.5);
+    --shadow-menu: 0 0 0 0.5px rgba(255, 255, 255, 0.16), 0 10px 30px rgba(0, 0, 0, 0.5);
+    --focus: 0 0 0 3px rgba(60, 196, 162, 0.4);
+
+    --seg-1: #3CC4A2;
+    --seg-2: #6BA8E0;
+    --seg-3: #EDB15A;
+    --seg-4: #B394DE;
+    --seg-track: rgba(255, 255, 255, 0.09);
+    --seg-done: #4cd07d;
+    --seg-fail: #ff6b61;
+    --graph: #3CC4A2;
+    --grid: rgba(255, 255, 255, 0.08);
+
+    --fi-paper: #3a3a3e;
+    --fi-fold: #4a4a50;
+    --fi-edge: rgba(255, 255, 255, 0.16);
+
+    --wallpaper: radial-gradient(1200px 700px at 15% 10%, #164a42 0%, transparent 60%),
+      radial-gradient(900px 700px at 90% 20%, #1d2c55 0%, transparent 55%),
+      radial-gradient(900px 600px at 50% 100%, #4a3418 0%, transparent 60%), #111317;
+  }
+}
+
+/* Always-dark scope (the notch island). */
+.dark-scope {
+  color-scheme: dark;
+  --text: #f5f5f7;
+  --text-2: #a1a1a6;
+  --text-3: #7c7c82;
+  --sep: rgba(255, 255, 255, 0.1);
+  --hover: rgba(255, 255, 255, 0.08);
+  --seg-1: #3CC4A2;
+  --seg-2: #6BA8E0;
+  --seg-3: #EDB15A;
+  --seg-4: #B394DE;
+  --seg-track: rgba(255, 255, 255, 0.1);
+  --seg-done: #4cd07d;
+  --seg-fail: #ff6b61;
+  --graph: #3CC4A2;
+  --fi-paper: #3a3a3e;
+  --fi-fold: #4a4a50;
+  --fi-edge: rgba(255, 255, 255, 0.16);
+  --focus: 0 0 0 3px rgba(60, 196, 162, 0.4);
+}
+
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin: 0; height: 100%; }
+body {
+  font: 13px/1.35 var(--font);
+  color: var(--text);
+  background: transparent;
+  -webkit-font-smoothing: antialiased;
+  -webkit-user-select: none;
+  user-select: none;
+  cursor: default;
+  overflow: hidden;
+}
+/* Outside the Tauri shell the screens sit on a desktop-like backdrop so translucency shows. */
+html.preview body { background: var(--wallpaper); background-attachment: fixed; }
+
+button { font: inherit; color: inherit; }
+input { font: inherit; color: inherit; -webkit-user-select: text; user-select: text; }
+:focus { outline: none; }
+:focus-visible { box-shadow: var(--focus); border-radius: 6px; }
+.num { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 11px; letter-spacing: -0.1px; }
+.muted { color: var(--text-2); }
+.faint { color: var(--text-3); }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+
+.file-icon { --fi-tint: var(--fi-light); flex: none; display: block; }
+@media (prefers-color-scheme: dark) { :root:not(.light) .file-icon { --fi-tint: var(--fi-dark); } }
+.dark-scope .file-icon { --fi-tint: var(--fi-dark); }
+
+/* Icon button: SF Symbols-sized glyph in a soft rounded hit area. */
+.ib {
+  width: 24px; height: 24px; flex: none;
+  display: inline-grid; place-items: center;
+  border: 0; border-radius: 6px; padding: 0;
+  background: transparent; color: var(--text-2);
+  transition: background-color 0.12s, color 0.12s;
+}
+.ib svg { width: 14px; height: 14px; }
+.ib:hover { background: var(--hover); color: var(--text); }
+.ib:active { background: var(--press); }
+.ib.round { border-radius: 50%; }
+
+/* Push buttons. */
+.btn {
+  height: 22px; padding: 0 10px;
+  display: inline-flex; align-items: center; gap: 5px;
+  border-radius: 6px; border: 0.5px solid var(--btn-border);
+  background: var(--btn); color: var(--text);
+  box-shadow: 0 0.5px 1px rgba(0, 0, 0, 0.08);
+  font-size: 12.5px; white-space: nowrap;
+}
+.btn svg { width: 13px; height: 13px; }
+.btn:active { filter: brightness(0.94); }
+.btn.primary { background: var(--accent); color: var(--on-accent); border-color: transparent; }
+.btn.primary:hover { background: var(--accent-hover); }
+.btn.danger { background: var(--danger); color: #fff; border-color: transparent; }
+.btn.plain { background: transparent; border-color: transparent; box-shadow: none; color: var(--text-2); }
+.btn.plain:hover { background: var(--hover); color: var(--text); }
+.btn[disabled] { opacity: 0.45; pointer-events: none; }
+
+.field {
+  height: 26px; width: 100%;
+  border-radius: 7px; border: 0.5px solid var(--field-border);
+  background: var(--field); padding: 0 9px;
+  font-size: 12.5px;
+}
+.field::placeholder { color: var(--text-3); }
+.field:focus { box-shadow: var(--focus); border-color: transparent; }
+.field.invalid { box-shadow: 0 0 0 3px var(--danger-bg); }
+
+/* Segmented bar canvases: sized by CSS, drawn by segbar.js. */
+canvas.segbar { display: block; width: 100%; height: 6px; }
+canvas.graph { display: block; width: 100%; }
+
+/* Popup menu (the ⋯ menu). */
+.menu {
+  position: fixed; z-index: 100; min-width: 168px;
+  padding: 5px; border-radius: 9px;
+  background: var(--surface); backdrop-filter: blur(30px) saturate(1.6); -webkit-backdrop-filter: blur(30px) saturate(1.6);
+  box-shadow: var(--shadow-menu);
+  animation: menu-in 0.12s ease-out;
+}
+@media (prefers-color-scheme: dark) { :root:not(.light) .menu { background: rgba(44, 44, 48, 0.88); } }
+html:not(.preview) .menu { background: var(--surface-solid); }
+.menu button {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  height: 24px; padding: 0 8px; border: 0; border-radius: 5px;
+  background: transparent; text-align: left; font-size: 13px;
+}
+.menu button svg { width: 14px; height: 14px; color: var(--text-2); }
+.menu button:hover, .menu button:focus-visible { background: var(--accent); color: var(--on-accent); box-shadow: none; }
+.menu button:hover svg, .menu button:focus-visible svg { color: inherit; }
+.menu button.danger { color: var(--danger); }
+.menu button.danger:hover { color: #fff; background: var(--danger); }
+.menu hr { border: 0; height: 0.5px; background: var(--sep-strong); margin: 4px 6px; }
+.menu kbd { margin-left: auto; font: inherit; color: var(--text-3); font-size: 12px; }
+.menu button:hover kbd { color: inherit; opacity: 0.8; }
+@keyframes menu-in { from { opacity: 0; transform: scale(0.97); } }
+
+/* Inline confirm (replaces confirm() dialogs). */
+.confirm {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px; margin-top: 6px; border-radius: 7px;
+  background: var(--danger-bg); color: var(--text);
+  font-size: 12px;
+  animation: confirm-in 0.16s ease-out;
+}
+.confirm span { flex: 1; }
+@keyframes confirm-in { from { opacity: 0; transform: translateY(-3px); } }
+
+.toast {
+  position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%);
+  padding: 6px 12px; border-radius: 8px; font-size: 12px;
+  background: rgba(30, 30, 32, 0.92); color: #fff;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
+  animation: menu-in 0.15s ease-out; z-index: 200; pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
+}
