@@ -18,3 +18,10 @@ Subagents build the pieces, each in its own git worktree/branch off `feat/engine
 - `cargo build`, `cargo clippy` and `cargo test` must pass for your crates before you report.
 - Commit on your branch with clear messages. Do not merge or push.
 - Report: what works, how you tested it (real commands + output), what's left, and any contract change you need.
+
+## Build environment
+Rust comes from Homebrew's rustup and `~/.cargo` is not writable in the sandbox, so every cargo command runs with:
+```
+export PATH=/opt/homebrew/opt/rustup/bin:$PATH CARGO_HOME=/Users/heispv/Documents/spate/.cargo-home
+```
+Network for cargo: `index.crates.io`, `static.crates.io`, `crates.io`.

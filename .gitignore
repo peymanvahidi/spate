@@ -3,3 +3,4 @@ target/
 node_modules/
 *.spate-part
 *.spate-part.json
+.cargo-home/
