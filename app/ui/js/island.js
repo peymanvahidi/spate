@@ -19,6 +19,7 @@ if (params.get('nonotch') === '1') root.classList.add('nonotch');
 if (params.get('notch')) root.style.setProperty('--notch-w', `${parseInt(params.get('notch'), 10)}px`);
 if (params.get('bar')) root.style.setProperty('--bar-h', `${parseInt(params.get('bar'), 10)}px`);
 const pinned = params.get('expanded') === '1';
+if (pinned) root.classList.add('pinned');
 
 const $ = (id) => document.getElementById(id);
 const island = $('island');

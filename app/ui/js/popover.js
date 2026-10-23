@@ -159,7 +159,7 @@ async function askCancel(job) {
   const r = rows.get(job.id);
   if (!r) return;
   select(job.id);
-  if (await inlineConfirm(r.el, `Cancel “${job.filename}”?`)) await api.cancel(job.id);
+  if (await inlineConfirm(r.el, "Cancel this download?")) await api.cancel(job.id);
   r.el.focus();
 }
 

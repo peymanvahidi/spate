@@ -123,6 +123,7 @@
   --focus: 0 0 0 3px rgba(60, 196, 162, 0.4);
 }
 
+:root.light { color-scheme: light; }
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
 html, body { margin: 0; height: 100%; }

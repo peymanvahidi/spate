@@ -55,7 +55,9 @@ export class SpeedGraph {
     ctx.clearRect(0, 0, w, h);
     const pts = this.source();
     // Lag one update behind "now" so the leading edge glides instead of stepping.
-    const now = (this.live && !reducedMotion.matches ? t : pts.at(-1)?.t ?? t) - (this.live ? 250 : 0);
+    // performance.now(), not the rAF stamp: store samples use the same clock.
+    const clock = performance.now();
+    const now = (this.live && !reducedMotion.matches ? clock : pts.at(-1)?.t ?? clock) - (this.live ? 250 : 0);
     // `fit`: a young history fills the width instead of hugging the right edge.
     let span = this.opts.seconds * 1000;
     if (this.opts.fit && pts.length) span = Math.min(span, Math.max(8000, now - pts[0].t));

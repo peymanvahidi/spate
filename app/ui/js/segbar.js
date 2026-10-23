@@ -196,7 +196,7 @@ export class SegBar {
         ctx.restore();
         // Received.
         ctx.save();
-        if (dim) ctx.globalAlpha *= failed ? 0.55 : 0.5;
+        if (dim) ctx.globalAlpha *= failed ? 0.6 : 0.7;
         ctx.fillStyle = color;
         ctx.fillRect(x0, 0, xp - x0, h);
         ctx.restore();

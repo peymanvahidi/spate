@@ -57,6 +57,7 @@ function schedule(id) {
     flushQueued = false;
     const ids = pending;
     pending = new Set();
+    totalHistory();
     for (const cb of listeners) cb(ids);
   });
 }

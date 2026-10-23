@@ -126,3 +126,6 @@ html.nonotch .band { padding: 0 18px; }
 @media (prefers-reduced-motion: reduce) {
   .island, .rows, .band, .wings { transition: none !important; }
 }
+
+/* ?expanded=1: pinned open, no entrance transition. */
+html.pinned .island, html.pinned .rows, html.pinned .band, html.pinned .wings { transition: none !important; }
