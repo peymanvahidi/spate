@@ -19,6 +19,59 @@ pub fn initial_connections(size: Option<u64>, max: usize) -> usize {
     n.clamp(1, 8).min(max).min(pieces)
 }
 
+/// Starting connection count: the learned per-host `hint` (clamped to `1..=max` and to how many
+/// min-size pieces fit) when there is one, otherwise the size rule.
+pub fn start_connections(size: Option<u64>, max: usize, hint: Option<usize>) -> usize {
+    let max = max.max(1);
+    match (hint, size) {
+        (Some(h), Some(size)) => h.clamp(1, max).min((size / MIN_PIECE).max(1) as usize),
+        (Some(_), None) => 1,
+        (None, _) => initial_connections(size, max),
+    }
+}
+
+/// Median of `v` (mean of the two middle values for an even count); 0 for an empty slice.
+pub fn median(v: &[f64]) -> f64 {
+    if v.is_empty() {
+        return 0.0;
+    }
+    let mut s = v.to_vec();
+    s.sort_by(f64::total_cmp);
+    let n = s.len();
+    if n % 2 == 1 {
+        s[n / 2]
+    } else {
+        (s[n / 2 - 1] + s[n / 2]) / 2.0
+    }
+}
+
+/// Reduce every `http(s)://…` URL in `s` to `scheme://host/…` so logs never carry paths or
+/// query strings (which can hold tokens).
+pub fn scrub_urls(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    loop {
+        let next = ["https://", "http://"].iter().filter_map(|p| rest.find(p).map(|i| (i, p.len()))).min();
+        let Some((i, plen)) = next else {
+            out.push_str(rest);
+            return out;
+        };
+        out.push_str(&rest[..i + plen]);
+        let after = &rest[i + plen..];
+        let end = after
+            .find(|c: char| c.is_whitespace() || matches!(c, ')' | '(' | '"' | '\'' | '<' | '>' | ',' | ';'))
+            .unwrap_or(after.len());
+        let url = &after[..end];
+        let authority = url.split(['/', '?', '#']).next().unwrap_or("");
+        let host = authority.rsplit_once('@').map(|(_, h)| h).unwrap_or(authority);
+        out.push_str(host);
+        if url.len() > authority.len() {
+            out.push_str("/…");
+        }
+        rest = &after[end..];
+    }
+}
+
 /// Exponential backoff with full jitter: 1 s · 2^(n-1), capped at 60 s, then a random factor in [0.5, 1].
 pub fn backoff(attempt: u32) -> std::time::Duration {
     let base = (1u64 << attempt.saturating_sub(1).min(6)).min(60) as f64;
@@ -277,6 +330,38 @@ mod tests {
         assert_eq!(initial_connections(mb(50_000), 8), 8);
         assert_eq!(initial_connections(mb(1024), 3), 3);
         assert_eq!(initial_connections(mb(1024), 0), 1);
+    }
+
+    #[test]
+    fn start_connections_hint() {
+        let mb = |n: u64| Some(n * MIB);
+        // No hint: the size rule.
+        assert_eq!(start_connections(mb(100), 8, None), 4);
+        // Hint wins, clamped to 1..=max and to the number of 4 MiB pieces.
+        assert_eq!(start_connections(mb(100), 8, Some(6)), 6);
+        assert_eq!(start_connections(mb(100), 8, Some(20)), 8);
+        assert_eq!(start_connections(mb(100), 3, Some(6)), 3);
+        assert_eq!(start_connections(mb(100), 8, Some(0)), 1);
+        assert_eq!(start_connections(mb(10), 8, Some(8)), 2);
+        assert_eq!(start_connections(None, 8, Some(8)), 1);
+    }
+
+    #[test]
+    fn median_values() {
+        assert_eq!(median(&[]), 0.0);
+        assert_eq!(median(&[3.0]), 3.0);
+        assert_eq!(median(&[5.0, 1.0, 3.0]), 3.0);
+        assert_eq!(median(&[4.0, 1.0, 3.0, 2.0]), 2.5);
+    }
+
+    #[test]
+    fn scrub() {
+        assert_eq!(
+            scrub_urls("error sending request for url (https://u:p@cdn.x.org/a/b?token=SECRET): reset"),
+            "error sending request for url (https://cdn.x.org/…): reset"
+        );
+        assert_eq!(scrub_urls("http://h:8080 and https://y.z/q?x=1"), "http://h:8080 and https://y.z/…");
+        assert_eq!(scrub_urls("no urls here"), "no urls here");
     }
 
     fn seg(pos: u64, end: u64, active: bool, speed: f64) -> SegInfo {

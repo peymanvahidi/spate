@@ -3,7 +3,7 @@
 
 use std::convert::Infallible;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering::SeqCst};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering::SeqCst};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -38,6 +38,17 @@ struct Server {
     if_range_seen: AtomicU32,
     if_range_mismatch: AtomicU32,
     dropped: AtomicU32,
+    /// The next ranged request starting at byte 0 is served at this rate (0 = off).
+    slow_zero_rate: AtomicU64,
+    /// Rate applied to that slow response while it streams (0 = lift the throttle).
+    slow_zero_rate_live: AtomicU64,
+    /// When more than this many bodies stream at once, each gets a quarter of `rate` (0 = off).
+    crowd_limit: AtomicUsize,
+    /// Close the connection without an answer when the User-Agent looks like a browser.
+    reject_browser_ua: AtomicBool,
+    user_agents: Mutex<Vec<String>>,
+    /// Start offsets of the ranged (non-probe) requests, in arrival order.
+    starts: Mutex<Vec<u64>>,
 }
 
 impl Server {
@@ -58,6 +69,12 @@ impl Server {
             if_range_seen: AtomicU32::new(0),
             if_range_mismatch: AtomicU32::new(0),
             dropped: AtomicU32::new(0),
+            slow_zero_rate: AtomicU64::new(0),
+            slow_zero_rate_live: AtomicU64::new(0),
+            crowd_limit: AtomicUsize::new(0),
+            reject_browser_ua: AtomicBool::new(false),
+            user_agents: Mutex::new(Vec::new()),
+            starts: Mutex::new(Vec::new()),
         })
     }
 }
@@ -132,6 +149,10 @@ async fn handle(req: Request<Incoming>, st: Arc<Server>) -> Result<Response<Body
     };
     b = b.header("content-length", end - start);
     let drop_at = (honour && !is_probe && take_one(&st.drop_next)).then(|| start + (end - start) / 2);
+    if honour && !is_probe {
+        st.starts.lock().unwrap().push(start);
+    }
+    let slow = honour && !is_probe && start == 0 && st.slow_zero_rate.swap(0, SeqCst) > 0;
 
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Frame<Bytes>, std::io::Error>>(4);
     let st2 = st.clone();
@@ -149,7 +170,18 @@ async fn handle(req: Request<Incoming>, st: Arc<Server>) -> Result<Response<Body
                 }
             }
             let next = (pos + CHUNK).min(end);
-            let rate = st2.rate.load(SeqCst);
+            let mut rate = st2.rate.load(SeqCst);
+            if slow {
+                // Re-read so a test can lift the throttle mid-stream.
+                let r = st2.slow_zero_rate_live.load(SeqCst);
+                if r > 0 {
+                    rate = r;
+                }
+            }
+            let crowd = st2.crowd_limit.load(SeqCst);
+            if crowd > 0 && rate > 0 && st2.concurrent.load(SeqCst) > crowd {
+                rate /= 4;
+            }
             if rate > 0 {
                 tokio::time::sleep(Duration::from_secs_f64((next - pos) as f64 / rate as f64)).await;
             }
@@ -182,7 +214,23 @@ async fn start(st: Arc<Server>, name: &str) -> Option<String> {
             let Ok((sock, _)) = listener.accept().await else { break };
             let st = st.clone();
             tokio::spawn(async move {
-                let svc = hyper::service::service_fn(move |req| handle(req, st.clone()));
+                let svc = hyper::service::service_fn(move |req: Request<Incoming>| {
+                    let st = st.clone();
+                    async move {
+                        let ua = req
+                            .headers()
+                            .get("user-agent")
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or("")
+                            .to_string();
+                        st.user_agents.lock().unwrap().push(ua.clone());
+                        if st.reject_browser_ua.load(SeqCst) && ua.starts_with("Mozilla/") {
+                            // A service error makes hyper close the connection without a reply.
+                            return Err(std::io::Error::other("no browsers"));
+                        }
+                        handle(req, st).await.map_err(|e| match e {})
+                    }
+                });
                 let _ = hyper::server::conn::http1::Builder::new().serve_connection(TokioIo::new(sock), svc).await;
             });
         }
@@ -342,4 +390,120 @@ async fn per_ip_connection_limit() {
     println!("100 MiB with a 2-connection limit in {:?}, {} rejected", t.elapsed(), st.rejected.load(SeqCst));
     assert_eq!(sha(&std::fs::read(&path).unwrap()), sha(&st.data));
     assert!(st.rejected.load(SeqCst) <= 4, "kept hammering the server");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn browser_ua_falls_back_to_spate_ua() {
+    let st = Server::new(6 * 1024 * 1024, true);
+    st.reject_browser_ua.store(true, SeqCst);
+    let Some(url) = start(st.clone(), "hetzner.bin").await else { return };
+    let dir = tempfile::tempdir().unwrap();
+    let mut j = job(&url, dir.path());
+    j.headers.push(("User-Agent".into(), spate_core::DEFAULT_USER_AGENT.into()));
+    let path = run(j).await.unwrap();
+    assert_eq!(sha(&std::fs::read(&path).unwrap()), sha(&st.data));
+    let uas = st.user_agents.lock().unwrap().clone();
+    println!("user agents seen: {uas:?}");
+    assert!(uas[0].starts_with("Mozilla/"), "first try uses the browser UA");
+    assert!(uas.len() >= 2);
+    assert!(uas[1..].iter().all(|u| u == spate_core::SPATE_USER_AGENT), "the rest of the job uses Spate's UA");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn start_connections_hint_is_used() {
+    // 64 MiB would start with 4 connections by the size rule; the per-host hint says 2.
+    let st = Server::new(64 * 1024 * 1024, true);
+    st.rate.store(1024 * 1024, SeqCst);
+    let Some(url) = start(st.clone(), "hint.bin").await else { return };
+    let dir = tempfile::tempdir().unwrap();
+    let mut j = job(&url, dir.path());
+    j.start_connections = Some(2);
+    let progress = Arc::new(Mutex::new(Snapshot::default()));
+    let (tx, rx) = tokio::sync::watch::channel(false);
+    let h = tokio::spawn(spate_core::run(j, progress.clone(), rx));
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let snap = progress.lock().unwrap().clone();
+    tx.send(true).unwrap();
+    assert!(h.await.unwrap().unwrap_err().is::<spate_core::Paused>());
+    println!("connections after 1.5 s: {}, segments {}", snap.connections, snap.segments.len());
+    assert_eq!(snap.connections, 2);
+    assert_eq!(snap.segments.len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn slow_connection_loses_its_back_half() {
+    // 12 MiB, two connections, no room to ramp (max 2). The connection for [0, 6 MiB) crawls at
+    // 100 KB/s; the other finishes in ~1.5 s and then sits idle because 6 MiB is too small for a
+    // normal split. Stealing must hand the idle connection the slow one's back half.
+    let st = Server::new(12 * 1024 * 1024, true);
+    st.rate.store(4 * 1024 * 1024, SeqCst);
+    st.slow_zero_rate.store(1, SeqCst);
+    st.slow_zero_rate_live.store(100 * 1024, SeqCst);
+    let Some(url) = start(st.clone(), "slow.bin").await else { return };
+    let dir = tempfile::tempdir().unwrap();
+    let mut j = job(&url, dir.path());
+    j.max_connections = 2;
+    j.start_connections = Some(2);
+    let t = std::time::Instant::now();
+    let h = tokio::spawn(run(j));
+    let half = 6 * 1024 * 1024;
+    let stolen = loop {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let starts = st.starts.lock().unwrap().clone();
+        if let Some(s) = starts.iter().find(|&&s| s > 0 && s < half) {
+            break Some((*s, t.elapsed()));
+        }
+        if t.elapsed() > Duration::from_secs(12) {
+            break None;
+        }
+    };
+    st.slow_zero_rate_live.store(0, SeqCst); // let the rest finish quickly
+    let path = h.await.unwrap().unwrap();
+    println!("stolen: {stolen:?}, request starts {:?}", st.starts.lock().unwrap());
+    let (at, when) = stolen.expect("the slow connection's back half was never stolen");
+    assert!(when >= Duration::from_secs(4) && when < Duration::from_secs(8), "stolen after {when:?}");
+    assert!(at > 3 * 1024 * 1024, "steals the back half, got {at}");
+    assert_eq!(sha(&std::fs::read(&path).unwrap()), sha(&st.data));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn throughput_fall_undoes_ramp_up() {
+    // Three connections get 1 MiB/s each; a fourth makes the server give everyone a quarter.
+    let st = Server::new(64 * 1024 * 1024, true);
+    st.rate.store(1024 * 1024, SeqCst);
+    st.crowd_limit.store(3, SeqCst);
+    let Some(url) = start(st.clone(), "crowd.bin").await else { return };
+    let dir = tempfile::tempdir().unwrap();
+    let mut j = job(&url, dir.path());
+    j.max_connections = 4;
+    j.start_connections = Some(3);
+    let progress = Arc::new(Mutex::new(Snapshot::default()));
+    let (_tx, rx) = tokio::sync::watch::channel(false);
+    let h = tokio::spawn(spate_core::run(j, progress.clone(), rx));
+    let t = std::time::Instant::now();
+    let mut seen = Vec::new();
+    let mut back_to_three = None;
+    while t.elapsed() < Duration::from_secs(14) {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let c = progress.lock().unwrap().connections;
+        seen.push(c);
+        if seen.contains(&4) && c == 3 && back_to_three.is_none() {
+            back_to_three = Some(t.elapsed());
+        }
+        if back_to_three.is_some_and(|b| t.elapsed() > b + Duration::from_secs(3)) {
+            break;
+        }
+    }
+    // After the drop it must not ramp up again.
+    let after: Vec<usize> = match back_to_three {
+        Some(_) => seen.iter().copied().skip_while(|&c| c != 4).skip_while(|&c| c == 4).collect(),
+        None => vec![],
+    };
+    st.crowd_limit.store(0, SeqCst);
+    st.rate.store(0, SeqCst);
+    let path = h.await.unwrap().unwrap();
+    println!("connections every 250 ms: {seen:?}; back to 3 after {back_to_three:?}");
+    assert!(back_to_three.is_some(), "never dropped the extra connection");
+    assert!(after.iter().all(|&c| c <= 3), "ramped up again after the fall: {after:?}");
+    assert_eq!(sha(&std::fs::read(&path).unwrap()), sha(&st.data));
 }

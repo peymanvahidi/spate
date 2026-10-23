@@ -28,6 +28,10 @@ use util::{Pick, SegInfo, MIB, MIN_PIECE};
 pub const DEFAULT_USER_AGENT: &str =
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36";
 
+/// Spate's own User-Agent: the CLI default, and the fallback when a server drops requests that
+/// carry a browser UA with a non-browser TLS fingerprint.
+pub const SPATE_USER_AGENT: &str = concat!("Spate/", env!("CARGO_PKG_VERSION"));
+
 const BUF_SIZE: usize = 256 * 1024;
 const STALL_TIMEOUT: Duration = Duration::from_secs(15);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -39,6 +43,17 @@ const SNAPSHOT_EVERY: Duration = Duration::from_millis(250);
 const SAVE_EVERY: Duration = Duration::from_secs(1);
 const RAMP_EVERY: Duration = Duration::from_millis(2500);
 const MAX_RESTARTS: u32 = 3;
+/// A connection slower than this fraction of the median for `SLOW_FOR` loses its back half.
+const SLOW_FRACTION: f64 = 0.3;
+const SLOW_FOR: Duration = Duration::from_secs(5);
+/// Smallest back half worth stealing from a slow connection.
+const STEAL_MIN: u64 = MIB;
+/// Throughput this far below the level before a ramp-up, for `FALL_WINDOWS` ramp windows
+/// (~5 s), undoes that ramp-up.
+const FALL_FRACTION: f64 = 0.75;
+const FALL_WINDOWS: u32 = 2;
+/// How many ramp windows after an increase the fall check stays armed.
+const PROBATION_WINDOWS: u32 = 4;
 
 /// Returned by [`run`] when the download was cancelled. The state is saved; calling `run`
 /// again with the same job resumes.
@@ -111,6 +126,10 @@ struct Seg {
     retries: u32,
     spawn_pos: u64,
     not_before: Option<Instant>,
+    /// Since when this connection has been below `SLOW_FRACTION` of the median.
+    slow_since: Option<Instant>,
+    /// Asks the worker to stop after its current chunk (used to drop one connection).
+    yield_req: bool,
 }
 
 impl Seg {
@@ -126,6 +145,8 @@ impl Seg {
             retries: 0,
             spawn_pos: flushed,
             not_before: None,
+            slow_since: None,
+            yield_req: false,
         }
     }
     fn done(&self) -> bool {
@@ -137,6 +158,17 @@ struct Shared {
     segs: Vec<Seg>,
     /// Monotonic count of bytes received (for throughput).
     bytes_in: u64,
+}
+
+impl Shared {
+    /// Split segment `i` at `at`: it keeps `[start, at)`, a new inactive segment gets
+    /// `[at, old_end)`. Returns the new segment's index.
+    fn split(&mut self, i: usize, at: u64) -> usize {
+        let old_end = self.segs[i].end;
+        self.segs[i].end = at;
+        self.segs.push(Seg::new(at, old_end, at));
+        self.segs.len() - 1
+    }
 }
 
 struct Ctx {
@@ -175,11 +207,23 @@ struct PersistState {
 // ---------------------------------------------------------------------------------------------
 // HTTP helpers
 
-/// Debug log to stderr when `SPATE_LOG` is set. Never prints headers (cookies).
+static LOG_SINK: std::sync::OnceLock<fn(&str)> = std::sync::OnceLock::new();
+
+/// Route the engine's diagnostic messages to `sink` (the daemon's log file) instead of stderr.
+/// Messages never contain header values, and URLs in them are reduced to scheme + host.
+/// Only the first call has an effect.
+pub fn set_log_sink(sink: fn(&str)) {
+    let _ = LOG_SINK.set(sink);
+}
+
+/// Diagnostic log: to the sink set by [`set_log_sink`], else to stderr when `SPATE_LOG` is set.
+/// Never prints headers (cookies); URLs are scrubbed to their host.
 fn debug(args: std::fmt::Arguments<'_>) {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    if *ON.get_or_init(|| std::env::var_os("SPATE_LOG").is_some()) {
-        eprintln!("[spate] {args}");
+    if let Some(sink) = LOG_SINK.get() {
+        sink(&util::scrub_urls(&args.to_string()));
+    } else if *ON.get_or_init(|| std::env::var_os("SPATE_LOG").is_some()) {
+        eprintln!("[spate] {}", util::scrub_urls(&args.to_string()));
     }
 }
 
@@ -270,16 +314,73 @@ struct Probe {
     response: Option<reqwest::Response>,
 }
 
-async fn probe(client: &reqwest::Client, url: &str, headers: &HeaderMap) -> Result<Probe> {
+/// True when the request got no HTTP answer at all: the server closed or reset the connection
+/// (curl's "Empty reply from server").
+fn is_empty_reply(e: &reqwest::Error) -> bool {
+    let mut src: Option<&dyn std::error::Error> = Some(e);
+    while let Some(x) = src {
+        if let Some(io) = x.downcast_ref::<std::io::Error>() {
+            if matches!(
+                io.kind(),
+                std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::ConnectionAborted
+                    | std::io::ErrorKind::UnexpectedEof
+                    | std::io::ErrorKind::BrokenPipe
+            ) {
+                return true;
+            }
+        }
+        src = x.source();
+    }
+    let s = chain(e).to_ascii_lowercase();
+    ["connection closed before message completed", "connection reset", "unexpected eof", "empty reply"]
+        .iter()
+        .any(|p| s.contains(p))
+}
+
+fn is_browser_ua(h: &HeaderMap) -> bool {
+    h.get(header::USER_AGENT).and_then(|v| v.to_str().ok()).is_some_and(|ua| ua.starts_with("Mozilla/"))
+}
+
+fn ua_label(h: &HeaderMap) -> &'static str {
+    if is_browser_ua(h) {
+        "browser"
+    } else if h.get(header::USER_AGENT).is_some_and(|v| v == SPATE_USER_AGENT) {
+        "Spate"
+    } else {
+        "custom"
+    }
+}
+
+/// Probe size and range support with `Range: bytes=0-0`. If the server drops a request that
+/// carries a browser User-Agent, retry once with [`SPATE_USER_AGENT`]; when that works,
+/// `headers` keeps it for the whole job.
+async fn probe(client: &reqwest::Client, url: &str, headers: &mut HeaderMap) -> Result<Probe> {
     let mut attempt = 0;
+    let mut replaced_ua: Option<HeaderValue> = None; // the browser UA, while we try ours
+    let mut ua_tried = false;
     loop {
         attempt += 1;
         let last = attempt >= 4;
         let req = client.get(url).headers(headers.clone()).header(header::RANGE, "bytes=0-0");
         let resp = match tokio::time::timeout(RESPONSE_TIMEOUT, req.send()).await {
             Ok(Ok(r)) => r,
+            Ok(Err(e)) if !ua_tried && is_browser_ua(headers) && is_empty_reply(&e) => {
+                debug(format_args!(
+                    "probe: empty reply with a browser User-Agent ({}); retrying as {SPATE_USER_AGENT}",
+                    chain(&e)
+                ));
+                ua_tried = true;
+                replaced_ua = headers.insert(header::USER_AGENT, HeaderValue::from_static(SPATE_USER_AGENT));
+                attempt -= 1;
+                continue;
+            }
             Ok(Err(e)) if !last => {
                 debug(format_args!("probe attempt {attempt} failed: {}", chain(&e)));
+                if let Some(orig) = replaced_ua.take() {
+                    // Our UA did not help either: go back to the browser's.
+                    headers.insert(header::USER_AGENT, orig);
+                }
                 tokio::time::sleep(util::backoff(attempt)).await;
                 continue;
             }
@@ -297,6 +398,7 @@ async fn probe(client: &reqwest::Client, url: &str, headers: &HeaderMap) -> Resu
             }
             _ => {}
         }
+        debug(format_args!("probe: HTTP {status} with the {} User-Agent", ua_label(headers)));
         let h = resp.headers();
         let mut p = Probe {
             final_url: resp.url().to_string(),
@@ -458,7 +560,7 @@ async fn worker(
             }
             Ok(Some(Ok(b))) => b,
         };
-        let end_now = {
+        let (end_now, yield_now) = {
             let mut s = ctx.lock();
             // The end can shrink when another connection splits this segment.
             let end_now = s.segs[idx].end;
@@ -467,8 +569,13 @@ async fn worker(
             cur += take as u64;
             s.segs[idx].pos = cur;
             s.bytes_in += take as u64;
-            end_now
+            (end_now, s.segs[idx].yield_req)
         };
+        if yield_now && cur < end_now {
+            // The coordinator is dropping this connection; the rest of the segment waits for
+            // the next free one.
+            return flush_then(&ctx, idx, &mut buf, &mut off, Outcome::Cancelled);
+        }
         if buf.len() >= BUF_SIZE || cur >= end_now {
             if let Err(e) = flush(&ctx, idx, &mut buf, &mut off) {
                 return Outcome::Fatal(e);
@@ -574,6 +681,54 @@ async fn stop_all(stop_tx: &watch::Sender<bool>, tasks: &mut JoinSet<(usize, Out
     }
 }
 
+/// Slow-connection stealing. Tracks how long each active connection has been below
+/// `SLOW_FRACTION` of the median; once one has been for `SLOW_FOR` and a connection is free
+/// (`free`: idle or could be added), the back half of its remaining range becomes a new inactive
+/// segment for the free connection to pick up. Returns whether it split something.
+fn steal_from_slow(s: &mut Shared, now: Instant, median_speed: &mut f64, free: bool) -> bool {
+    let active: Vec<usize> = (0..s.segs.len()).filter(|&i| s.segs[i].active && !s.segs[i].done()).collect();
+    if active.len() >= 2 {
+        let speeds: Vec<f64> = active.iter().map(|&i| s.segs[i].speed).collect();
+        *median_speed = util::median(&speeds);
+    }
+    let reference = *median_speed;
+    let mut victim = None;
+    for &i in &active {
+        let g = &mut s.segs[i];
+        if reference > 0.0 && g.speed < SLOW_FRACTION * reference {
+            let since = *g.slow_since.get_or_insert(now);
+            if now - since >= SLOW_FOR && victim.is_none() {
+                victim = Some(i);
+            }
+        } else {
+            g.slow_since = None;
+        }
+    }
+    let Some(i) = victim.filter(|_| free) else { return false };
+    let g = &s.segs[i];
+    let Some(at) = util::split_point(g.pos, g.end).filter(|at| g.end - at >= STEAL_MIN) else {
+        return false;
+    };
+    debug(format_args!(
+        "segment {i} is slow ({:.0} B/s vs median {reference:.0} B/s): stealing [{at}, {})",
+        g.speed, g.end
+    ));
+    s.segs[i].slow_since = None;
+    s.split(i, at);
+    true
+}
+
+/// Ask the slowest active connection to stop after its current chunk; its segment goes back to
+/// the pool for the next free connection.
+fn drop_one_connection(s: &mut Shared) {
+    let slowest = (0..s.segs.len())
+        .filter(|&i| s.segs[i].active && !s.segs[i].done() && !s.segs[i].yield_req)
+        .min_by(|&a, &b| s.segs[a].speed.total_cmp(&s.segs[b].speed));
+    if let Some(i) = slowest {
+        s.segs[i].yield_req = true;
+    }
+}
+
 async fn run_once(job: &Job, progress: &Arc<Mutex<Snapshot>>, cancel: &watch::Receiver<bool>) -> Result<PathBuf> {
     let set_progress = |snap: Snapshot| {
         *progress.lock().unwrap_or_else(|e| e.into_inner()) = snap;
@@ -582,10 +737,10 @@ async fn run_once(job: &Job, progress: &Arc<Mutex<Snapshot>>, cancel: &watch::Re
         return Err(Paused.into());
     }
     let client = build_client()?;
-    let headers = build_headers(&job.headers);
+    let mut headers = build_headers(&job.headers);
     let mut user_cancel = cancel.clone();
     let p = tokio::select! {
-        p = probe(&client, &job.url, &headers) => p?,
+        p = probe(&client, &job.url, &mut headers) => p?,
         _ = wait_stop(&mut user_cancel) => return Err(Paused.into()),
     };
 
@@ -628,7 +783,7 @@ async fn run_once(job: &Job, progress: &Arc<Mutex<Snapshot>>, cancel: &watch::Re
         Some(s) => s,
         None => match size {
             Some(size) if p.ranged && size > 0 => {
-                let n = util::initial_connections(Some(size), job.max_connections) as u64;
+                let n = util::start_connections(Some(size), job.max_connections, job.start_connections) as u64;
                 let piece = (size / n).div_ceil(util::ALIGN) * util::ALIGN;
                 (0..n)
                     .map(|i| (i * piece, ((i + 1) * piece).min(size)))
@@ -641,7 +796,15 @@ async fn run_once(job: &Job, progress: &Arc<Mutex<Snapshot>>, cancel: &watch::Re
         },
     };
     let remaining: u64 = segs.iter().map(|s| s.end.saturating_sub(s.flushed)).sum();
-    let mut want = if p.ranged { util::initial_connections(Some(remaining), job.max_connections) } else { 1 };
+    let mut want = if p.ranged {
+        util::start_connections(Some(remaining), job.max_connections, job.start_connections)
+    } else {
+        1
+    };
+    debug(format_args!(
+        "start: size={size:?} ranged={} connections={want} (hint {:?}, max {})",
+        p.ranged, job.start_connections, job.max_connections
+    ));
     let mut cap = job.max_connections.max(1);
 
     let if_range = if p.ranged {
@@ -682,6 +845,10 @@ async fn run_once(job: &Job, progress: &Arc<Mutex<Snapshot>>, cancel: &watch::Re
     let (mut snap_bytes, mut ramp_bytes) = (0u64, 0u64);
     let mut speed = 0.0f64;
     let mut thr_at_increase = 0.0f64;
+    // After a ramp-up: (throughput before it, ramp windows since, low windows in a row).
+    let mut probation: Option<(f64, u32, u32)> = None;
+    // Last median per-connection speed seen while at least two connections were running.
+    let mut median_speed = 0.0f64;
 
     set_progress(snapshot(&ctx.lock(), &filename, size, 0.0, 0));
 
@@ -720,12 +887,7 @@ async fn run_once(job: &Job, progress: &Arc<Mutex<Snapshot>>, cancel: &watch::Re
                     let Some(pk) = util::pick(&infos, now, MIN_PIECE, ctx.ranged) else { break };
                     let idx = match pk {
                         Pick::Resume(i) => i,
-                        Pick::Split(i, at) => {
-                            let old_end = s.segs[i].end;
-                            s.segs[i].end = at;
-                            s.segs.push(Seg::new(at, old_end, at));
-                            s.segs.len() - 1
-                        }
+                        Pick::Split(i, at) => s.split(i, at),
                     };
                     let g = &mut s.segs[idx];
                     g.active = true;
@@ -733,6 +895,9 @@ async fn run_once(job: &Job, progress: &Arc<Mutex<Snapshot>>, cancel: &watch::Re
                     g.last_pos = g.pos;
                     g.spawn_pos = g.flushed;
                     g.not_before = None;
+                    g.slow_since = None;
+                    g.yield_req = false;
+                    g.speed = 0.0;
                     idx
                 };
                 let (c, rx, init) = (ctx.clone(), stop_rx.clone(), initial_response.take());
@@ -770,6 +935,8 @@ async fn run_once(job: &Job, progress: &Arc<Mutex<Snapshot>>, cancel: &watch::Re
                     let g = &mut s.segs[idx];
                     g.active = false;
                     g.pos = g.flushed;
+                    g.yield_req = false;
+                    g.slow_since = None;
                     if !ctx.ranged && !matches!(outcome, Outcome::Finished) {
                         // No ranges: a broken stream starts over.
                         g.pos = 0;
@@ -837,6 +1004,12 @@ async fn run_once(job: &Job, progress: &Arc<Mutex<Snapshot>>, cancel: &watch::Re
                     let inst = (s.bytes_in - snap_bytes) as f64 / dt;
                     speed = if speed == 0.0 { inst } else { 0.3 * inst + 0.7 * speed };
                     snap_bytes = s.bytes_in;
+                    if !cancelled && ctx.ranged {
+                        let free = tasks.len() < want || want < cap;
+                        if steal_from_slow(&mut s, now, &mut median_speed, free) && tasks.len() >= want {
+                            want += 1;
+                        }
+                    }
                     set_progress(snapshot(&s, &filename, size, speed, tasks.len()));
                     last_snap = now;
                 }
@@ -845,11 +1018,33 @@ async fn run_once(job: &Job, progress: &Arc<Mutex<Snapshot>>, cancel: &watch::Re
                     let thr = (bytes_in - ramp_bytes) as f64 / (now - last_ramp).as_secs_f64();
                     ramp_bytes = bytes_in;
                     last_ramp = now;
-                    if !cancelled && ctx.ranged && tasks.len() >= want && want < cap
-                        && thr > 0.0 && thr >= 1.1 * thr_at_increase
-                    {
+                    let busy = !cancelled && ctx.ranged && tasks.len() >= want;
+                    if let Some((before, windows, low)) = probation.as_mut() {
+                        *windows += 1;
+                        if busy {
+                            *low = if thr <= FALL_FRACTION * *before { *low + 1 } else { 0 };
+                        }
+                        if *low >= FALL_WINDOWS && want > 1 {
+                            // Throughput fell after the last ramp-up: undo it and stay below.
+                            debug(format_args!(
+                                "throughput fell to {:.0}% after ramp-up: back to {} connections",
+                                thr / before.max(1.0) * 100.0,
+                                want - 1
+                            ));
+                            want -= 1;
+                            cap = want;
+                            thr_at_increase = thr;
+                            probation = None;
+                            drop_one_connection(&mut ctx.lock());
+                        } else if *windows >= PROBATION_WINDOWS {
+                            probation = None;
+                        }
+                    }
+                    if busy && want < cap && thr > 0.0 && thr >= 1.1 * thr_at_increase {
                         want += 1;
+                        probation = Some((thr, 0, 0));
                         thr_at_increase = thr;
+                        debug(format_args!("ramp-up to {want} connections"));
                     }
                 }
                 if p.ranged && now - last_save >= SAVE_EVERY {
