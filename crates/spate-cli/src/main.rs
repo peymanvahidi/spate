@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Parser, Subcommand};
 use serde_json::{json, Value};
-use spate_proto::{Job, JobEvent, JobState, JobView, SegmentView, Snapshot};
+use spate_proto::{Job, JobState, JobView, SegmentView, Snapshot};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
@@ -484,11 +484,17 @@ async fn watch(socket: &std::path::Path, until_idle: bool) -> Result<i32> {
             _ = tokio::signal::ctrl_c() => break 130,
         };
         let v = next?;
-        let Ok(ev) = serde_json::from_value::<JobEvent>(v) else { continue };
-        if ev.event == "removed" {
-            jobs.remove(&ev.job.id);
-        } else {
-            jobs.insert(ev.job.id.clone(), ev.job);
+        match v["event"].as_str() {
+            Some("removed") => {
+                if let Some(id) = v["job_id"].as_str() {
+                    jobs.remove(id);
+                }
+            }
+            Some("job") => {
+                let Ok(job) = serde_json::from_value::<JobView>(v["job"].clone()) else { continue };
+                jobs.insert(job.id.clone(), job);
+            }
+            _ => continue,
         }
         if tty {
             if last_draw.elapsed() >= Duration::from_millis(100) {

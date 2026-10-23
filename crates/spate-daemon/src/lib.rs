@@ -33,10 +33,30 @@ use tokio::task::JoinHandle;
 
 pub use settings::Settings;
 
-/// Event names on the [`Handle::subscribe`] channel (and the socket's `subscribe` pushes).
+/// Event names in the socket's `subscribe` pushes.
 pub const EVENT_JOB: &str = "job";
-/// The job was dropped from the history (`remove`); `job` is its last view.
 pub const EVENT_REMOVED: &str = "removed";
+
+/// What [`Handle::subscribe`] delivers. (Unboxed on purpose: nearly every event is a `Job`.)
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum DaemonEvent {
+    /// Progress (≈4/s per running job) or a state change (always one event per change).
+    Job(JobView),
+    /// The job was dropped from the history (`remove`).
+    Removed(String),
+}
+
+impl DaemonEvent {
+    /// The socket push line: `{"event":"job","job":{…}}` or `{"event":"removed","job_id":"…"}`.
+    pub fn to_json(&self) -> serde_json::Value {
+        match self {
+            DaemonEvent::Job(job) => serde_json::to_value(JobEvent { event: EVENT_JOB.into(), job: job.clone() })
+                .unwrap_or(serde_json::Value::Null),
+            DaemonEvent::Removed(id) => serde_json::json!({"event": EVENT_REMOVED, "job_id": id}),
+        }
+    }
+}
 
 /// Error codes besides those in CONTRACTS.md (`not_supported`, `unknown_method`, `bad_request`).
 pub const E_NOT_FOUND: &str = "not_found";
@@ -288,7 +308,7 @@ struct Inner {
     settings: Settings,
     db: Mutex<Db>,
     state: Mutex<State>,
-    events: broadcast::Sender<JobEvent>,
+    events: broadcast::Sender<DaemonEvent>,
     closing: AtomicBool,
     prevent_sleep: bool,
     caffeinate: Mutex<Option<std::process::Child>>,
@@ -309,7 +329,7 @@ impl Inner {
     }
 
     fn emit(&self, e: &Entry) {
-        let _ = self.events.send(JobEvent { event: EVENT_JOB.into(), job: e.view() });
+        let _ = self.events.send(DaemonEvent::Job(e.view()));
     }
 
     /// Persist + broadcast a state change.
@@ -514,8 +534,8 @@ impl Handle {
     }
 
     /// Every job update (≈4/s per running job and one per state change) as
-    /// `JobEvent { event: "job" | "removed", job }`.
-    pub fn subscribe(&self) -> broadcast::Receiver<JobEvent> {
+    /// [`DaemonEvent::Job`] / [`DaemonEvent::Removed`].
+    pub fn subscribe(&self) -> broadcast::Receiver<DaemonEvent> {
         self.inner.events.subscribe()
     }
 
@@ -690,12 +710,12 @@ impl Handle {
         if !matches!(state, JobState::Done | JobState::Failed) {
             return Err(err(E_BAD_STATE, format!("job is {}; cancel it first", db::state_str(state))));
         }
-        let e = st.jobs.remove(idx);
+        st.jobs.remove(idx);
         if let Err(x) = self.inner.db.lock().unwrap_or_else(|e| e.into_inner()).delete_job(id) {
             self.inner.log.log(&format!("job {id}: delete from database failed: {x:#}"));
             return Err(err(E_INTERNAL, "database error"));
         }
-        let _ = self.inner.events.send(JobEvent { event: EVENT_REMOVED.into(), job: e.view() });
+        let _ = self.inner.events.send(DaemonEvent::Removed(id.to_string()));
         Ok(())
     }
 

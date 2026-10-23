@@ -47,6 +47,10 @@ struct Server {
     /// Close the connection without an answer when the User-Agent looks like a browser.
     reject_browser_ua: AtomicBool,
     user_agents: Mutex<Vec<String>>,
+    /// The next ranged request starting at byte 0 stalls 64 KiB before its end.
+    stall_zero_tail: AtomicBool,
+    /// The next N ranged requests stall 64 KiB before their end.
+    stall_tails: AtomicU32,
     /// Start offsets of the ranged (non-probe) requests, in arrival order.
     starts: Mutex<Vec<u64>>,
 }
@@ -74,6 +78,8 @@ impl Server {
             crowd_limit: AtomicUsize::new(0),
             reject_browser_ua: AtomicBool::new(false),
             user_agents: Mutex::new(Vec::new()),
+            stall_zero_tail: AtomicBool::new(false),
+            stall_tails: AtomicU32::new(0),
             starts: Mutex::new(Vec::new()),
         })
     }
@@ -153,6 +159,10 @@ async fn handle(req: Request<Incoming>, st: Arc<Server>) -> Result<Response<Body
         st.starts.lock().unwrap().push(start);
     }
     let slow = honour && !is_probe && start == 0 && st.slow_zero_rate.swap(0, SeqCst) > 0;
+    let stall_at = (honour
+        && !is_probe
+        && ((start == 0 && st.stall_zero_tail.swap(false, SeqCst)) || take_one(&st.stall_tails)))
+        .then(|| end.saturating_sub(64 * 1024));
 
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Frame<Bytes>, std::io::Error>>(4);
     let st2 = st.clone();
@@ -162,6 +172,9 @@ async fn handle(req: Request<Incoming>, st: Arc<Server>) -> Result<Response<Body
         let mut pos = start;
         const CHUNK: u64 = 16 * 1024;
         while pos < end {
+            if stall_at.is_some_and(|s| pos >= s) {
+                tokio::time::sleep(Duration::from_secs(60)).await; // never finishes in a test
+            }
             if let Some(d) = drop_at {
                 if pos >= d {
                     st2.dropped.fetch_add(1, SeqCst);
@@ -506,4 +519,46 @@ async fn throughput_fall_undoes_ramp_up() {
     assert!(back_to_three.is_some(), "never dropped the extra connection");
     assert!(after.iter().all(|&c| c <= 3), "ramped up again after the fall: {after:?}");
     assert_eq!(sha(&std::fs::read(&path).unwrap()), sha(&st.data));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stalled_tail_reconnects_early() {
+    // [0, 6 MiB) stalls 64 KiB before its end. Too little is left to split, so instead of
+    // waiting out the 15 s stall timeout the connection is restarted once it has been slow 5 s.
+    let st = Server::new(12 * 1024 * 1024, true);
+    st.rate.store(4 * 1024 * 1024, SeqCst);
+    st.stall_zero_tail.store(true, SeqCst);
+    let Some(url) = start(st.clone(), "tail.bin").await else { return };
+    let dir = tempfile::tempdir().unwrap();
+    let mut j = job(&url, dir.path());
+    j.max_connections = 2;
+    j.start_connections = Some(2);
+    let t = std::time::Instant::now();
+    let path = run(j).await.unwrap();
+    let took = t.elapsed();
+    let starts = st.starts.lock().unwrap().clone();
+    println!("finished in {took:?}; request starts {starts:?}");
+    assert_eq!(sha(&std::fs::read(&path).unwrap()), sha(&st.data));
+    assert!(took < Duration::from_secs(12), "waited for the stall timeout: {took:?}");
+    assert!(starts.iter().any(|&s| s > 5 * 1024 * 1024 && s < 6 * 1024 * 1024), "tail was re-requested");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn simultaneous_stalls_reconnect_early() {
+    // Both connections stall near their ends at the same time, so the median speed collapses
+    // too; "no bytes for 5 s" still counts as slow and both get reconnected.
+    let st = Server::new(12 * 1024 * 1024, true);
+    st.rate.store(4 * 1024 * 1024, SeqCst);
+    st.stall_tails.store(2, SeqCst);
+    let Some(url) = start(st.clone(), "tails.bin").await else { return };
+    let dir = tempfile::tempdir().unwrap();
+    let mut j = job(&url, dir.path());
+    j.max_connections = 3;
+    j.start_connections = Some(2);
+    let t = std::time::Instant::now();
+    let path = run(j).await.unwrap();
+    let took = t.elapsed();
+    println!("finished in {took:?}; request starts {:?}", st.starts.lock().unwrap());
+    assert_eq!(sha(&std::fs::read(&path).unwrap()), sha(&st.data));
+    assert!(took < Duration::from_secs(13), "waited for the stall timeout: {took:?}");
 }

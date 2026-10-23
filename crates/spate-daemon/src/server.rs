@@ -129,9 +129,9 @@ async fn connection(stream: UnixStream, handle: Handle) {
 }
 
 /// Current state of every job, then every event, until the client goes away.
-async fn push(handle: Handle, mut events: broadcast::Receiver<spate_proto::JobEvent>, tx: mpsc::Sender<String>) {
+async fn push(handle: Handle, mut events: broadcast::Receiver<crate::DaemonEvent>, tx: mpsc::Sender<String>) {
     for job in handle.list() {
-        let ev = spate_proto::JobEvent { event: crate::EVENT_JOB.into(), job };
+        let ev = crate::DaemonEvent::Job(job).to_json();
         if tx.send(line_of(&ev)).await.is_err() {
             return;
         }
@@ -139,7 +139,7 @@ async fn push(handle: Handle, mut events: broadcast::Receiver<spate_proto::JobEv
     loop {
         match events.recv().await {
             Ok(ev) => {
-                if tx.send(line_of(&ev)).await.is_err() {
+                if tx.send(line_of(&ev.to_json())).await.is_err() {
                     return;
                 }
             }

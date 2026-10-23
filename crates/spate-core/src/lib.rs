@@ -128,8 +128,12 @@ struct Seg {
     not_before: Option<Instant>,
     /// Since when this connection has been below `SLOW_FRACTION` of the median.
     slow_since: Option<Instant>,
+    /// Last snapshot tick at which this connection received bytes.
+    progress_at: Instant,
     /// Asks the worker to stop after its current chunk (used to drop one connection).
     yield_req: bool,
+    /// Wakes the worker to drop its connection and reconnect (a stalled tail).
+    kick: Arc<tokio::sync::Notify>,
 }
 
 impl Seg {
@@ -146,7 +150,9 @@ impl Seg {
             spawn_pos: flushed,
             not_before: None,
             slow_since: None,
+            progress_at: Instant::now(),
             yield_req: false,
+            kick: Arc::new(tokio::sync::Notify::new()),
         }
     }
     fn done(&self) -> bool {
@@ -484,9 +490,9 @@ async fn worker(
     initial: Option<reqwest::Response>,
     mut stop: watch::Receiver<bool>,
 ) -> Outcome {
-    let (start_pos, end) = {
+    let (start_pos, end, kick) = {
         let s = ctx.lock();
-        (s.segs[idx].pos, s.segs[idx].end)
+        (s.segs[idx].pos, s.segs[idx].end, s.segs[idx].kick.clone())
     };
     let resp = match initial {
         Some(r) => r,
@@ -505,6 +511,7 @@ async fn worker(
                     Ok(Ok(r)) => r,
                 },
                 _ = wait_stop(&mut stop) => return Outcome::Cancelled,
+                _ = kick.notified() => return retry("reconnecting a slow connection"),
             }
         }
     };
@@ -537,6 +544,9 @@ async fn worker(
         let next = tokio::select! {
             n = tokio::time::timeout(STALL_TIMEOUT, stream.next()) => n,
             _ = wait_stop(&mut stop) => return flush_then(&ctx, idx, &mut buf, &mut off, Outcome::Cancelled),
+            _ = kick.notified() => {
+                return flush_then(&ctx, idx, &mut buf, &mut off, retry("reconnecting a slow connection"));
+            }
         };
         let chunk = match next {
             Err(_) => {
@@ -681,11 +691,23 @@ async fn stop_all(stop_tx: &watch::Sender<bool>, tasks: &mut JoinSet<(usize, Out
     }
 }
 
+#[derive(Debug, PartialEq)]
+enum SlowAction {
+    None,
+    /// Split off the back half into a new inactive segment.
+    Split,
+    /// Too little left to split: the connection was told to reconnect.
+    Reconnect,
+}
+
 /// Slow-connection stealing. Tracks how long each active connection has been below
-/// `SLOW_FRACTION` of the median; once one has been for `SLOW_FOR` and a connection is free
+/// `SLOW_FRACTION` of the median, or has received nothing after its first bytes (a stall; the
+/// median is no help when several stall at once); once one has been for `SLOW_FOR` and a
+/// connection is free
 /// (`free`: idle or could be added), the back half of its remaining range becomes a new inactive
-/// segment for the free connection to pick up. Returns whether it split something.
-fn steal_from_slow(s: &mut Shared, now: Instant, median_speed: &mut f64, free: bool) -> bool {
+/// segment for the free connection to pick up. When the remainder is too small to split (a
+/// stalled tail), the connection is restarted instead of waiting out the 15 s stall timeout.
+fn steal_from_slow(s: &mut Shared, now: Instant, median_speed: &mut f64, free: bool) -> SlowAction {
     let active: Vec<usize> = (0..s.segs.len()).filter(|&i| s.segs[i].active && !s.segs[i].done()).collect();
     if active.len() >= 2 {
         let speeds: Vec<f64> = active.iter().map(|&i| s.segs[i].speed).collect();
@@ -696,26 +718,38 @@ fn steal_from_slow(s: &mut Shared, now: Instant, median_speed: &mut f64, free: b
     for &i in &active {
         let g = &mut s.segs[i];
         if reference > 0.0 && g.speed < SLOW_FRACTION * reference {
-            let since = *g.slow_since.get_or_insert(now);
-            if now - since >= SLOW_FOR && victim.is_none() {
-                victim = Some(i);
-            }
+            g.slow_since.get_or_insert(now);
         } else {
             g.slow_since = None;
         }
+        let slow = g.slow_since.is_some_and(|t| now - t >= SLOW_FOR);
+        // Waiting for the first byte is not a stall (slow servers take a while to answer).
+        let stalled = g.pos > g.spawn_pos && now - g.progress_at >= SLOW_FOR;
+        if (slow || stalled) && victim.is_none() {
+            victim = Some(i);
+        }
     }
-    let Some(i) = victim.filter(|_| free) else { return false };
-    let g = &s.segs[i];
+    let Some(i) = victim.filter(|_| free) else { return SlowAction::None };
+    let g = &mut s.segs[i];
     let Some(at) = util::split_point(g.pos, g.end).filter(|at| g.end - at >= STEAL_MIN) else {
-        return false;
+        debug(format_args!(
+            "segment {i} is slow ({:.0} B/s vs median {reference:.0} B/s) with {} bytes left: reconnecting",
+            g.speed,
+            g.end.saturating_sub(g.pos)
+        ));
+        g.slow_since = None;
+        g.progress_at = now;
+        g.kick.notify_one();
+        return SlowAction::Reconnect;
     };
     debug(format_args!(
         "segment {i} is slow ({:.0} B/s vs median {reference:.0} B/s): stealing [{at}, {})",
         g.speed, g.end
     ));
     s.segs[i].slow_since = None;
+    s.segs[i].progress_at = now;
     s.split(i, at);
-    true
+    SlowAction::Split
 }
 
 /// Ask the slowest active connection to stop after its current chunk; its segment goes back to
@@ -896,8 +930,10 @@ async fn run_once(job: &Job, progress: &Arc<Mutex<Snapshot>>, cancel: &watch::Re
                     g.spawn_pos = g.flushed;
                     g.not_before = None;
                     g.slow_since = None;
+                    g.progress_at = now;
                     g.yield_req = false;
                     g.speed = 0.0;
+                    g.kick = Arc::new(tokio::sync::Notify::new());
                     idx
                 };
                 let (c, rx, init) = (ctx.clone(), stop_rx.clone(), initial_response.take());
@@ -999,6 +1035,9 @@ async fn run_once(job: &Job, progress: &Arc<Mutex<Snapshot>>, cancel: &watch::Re
                     for g in s.segs.iter_mut() {
                         let inst = g.pos.saturating_sub(g.last_pos) as f64 / dt;
                         g.speed = if g.speed == 0.0 { inst } else { 0.3 * inst + 0.7 * g.speed };
+                        if g.pos > g.last_pos {
+                            g.progress_at = now;
+                        }
                         g.last_pos = g.pos;
                     }
                     let inst = (s.bytes_in - snap_bytes) as f64 / dt;
@@ -1006,7 +1045,8 @@ async fn run_once(job: &Job, progress: &Arc<Mutex<Snapshot>>, cancel: &watch::Re
                     snap_bytes = s.bytes_in;
                     if !cancelled && ctx.ranged {
                         let free = tasks.len() < want || want < cap;
-                        if steal_from_slow(&mut s, now, &mut median_speed, free) && tasks.len() >= want {
+                        let act = steal_from_slow(&mut s, now, &mut median_speed, free);
+                        if act == SlowAction::Split && tasks.len() >= want {
                             want += 1;
                         }
                     }
