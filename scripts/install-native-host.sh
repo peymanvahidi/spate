@@ -15,8 +15,12 @@ HOST_NAME="com.spate.host"
 HOME_DIR="${PREFIX_HOME:-$HOME}"
 BIN_DIR="$HOME_DIR/Library/Application Support/Spate/bin"
 BIN="$BIN_DIR/spate-host"
-MANIFEST_DIR="$HOME_DIR/Library/Application Support/BraveSoftware/Brave-Browser/NativeMessagingHosts"
-MANIFEST="$MANIFEST_DIR/$HOST_NAME.json"
+# Brave documents its own folder, but current Brave builds on macOS look in Google Chrome's
+# user-level folder instead (verified on Brave 1.96 / Chromium 154). Write both.
+MANIFEST_DIRS=(
+  "$HOME_DIR/Library/Application Support/BraveSoftware/Brave-Browser/NativeMessagingHosts"
+  "$HOME_DIR/Library/Application Support/Google/Chrome/NativeMessagingHosts"
+)
 
 # Extension ID = first 32 hex chars of SHA-256(DER public key), mapped 0-f → a-p.
 extension_id() {
@@ -57,12 +61,14 @@ cp "$BUILT" "$TMP_BIN"
 chmod 755 "$TMP_BIN"
 mv -f "$TMP_BIN" "$BIN"
 
-echo "==> Writing $MANIFEST"
-mkdir -p "$MANIFEST_DIR"
 # JSON-escape the path (backslashes and quotes).
 ESC_BIN="$(printf '%s' "$BIN" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
-TMP_MANIFEST="$(mktemp "$MANIFEST_DIR/.$HOST_NAME.XXXXXX")"
-cat > "$TMP_MANIFEST" <<EOF
+for MANIFEST_DIR in "${MANIFEST_DIRS[@]}"; do
+  MANIFEST="$MANIFEST_DIR/$HOST_NAME.json"
+  echo "==> Writing $MANIFEST"
+  mkdir -p "$MANIFEST_DIR"
+  TMP_MANIFEST="$(mktemp "$MANIFEST_DIR/.$HOST_NAME.XXXXXX")"
+  cat > "$TMP_MANIFEST" <<EOF
 {
   "name": "$HOST_NAME",
   "description": "Spate download accelerator",
@@ -71,8 +77,9 @@ cat > "$TMP_MANIFEST" <<EOF
   "allowed_origins": ["chrome-extension://$EXT_ID/"]
 }
 EOF
-chmod 644 "$TMP_MANIFEST"
-mv -f "$TMP_MANIFEST" "$MANIFEST"
+  chmod 644 "$TMP_MANIFEST"
+  mv -f "$TMP_MANIFEST" "$MANIFEST"
+done
 
 echo "==> Done. Extension ID: $EXT_ID"
 echo "    Load $ROOT/extension in brave://extensions (Developer mode → Load unpacked)."

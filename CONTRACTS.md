@@ -16,7 +16,7 @@ Owned by the PM. The Rust types for everything below live in `crates/spate-proto
 | Partial file | `<dir>/<filename>.spate-part` |
 | Resume state | `<dir>/<filename>.spate-part.json` |
 | Native messaging host name | `com.spate.host` |
-| Host manifest (Brave) | `~/Library/Application Support/BraveSoftware/Brave-Browser/NativeMessagingHosts/com.spate.host.json` |
+| Host manifest | `~/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.spate.host.json` (this is where Brave 1.96 on macOS actually looks) and, for older/newer Brave builds, `~/Library/Application Support/BraveSoftware/Brave-Browser/NativeMessagingHosts/com.spate.host.json` |
 
 ## Engine API (`spate-core`)
 

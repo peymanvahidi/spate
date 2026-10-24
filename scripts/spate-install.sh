@@ -31,6 +31,8 @@ HOST_BIN="$BIN_DIR/spate-host"
 CLI_LINK_DIR="$HOME_DIR/.local/bin"
 CLI_LINK="$CLI_LINK_DIR/spate"
 MANIFEST="$HOME_DIR/Library/Application Support/BraveSoftware/Brave-Browser/NativeMessagingHosts/com.spate.host.json"
+# Current Brave builds read Google Chrome's user-level folder (see install-native-host.sh).
+MANIFEST_CHROME="$HOME_DIR/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.spate.host.json"
 LAUNCH_AGENT="$HOME_DIR/Library/LaunchAgents/Spate.plist"
 EXT_ID="akcgnbcpioinnkkmoobjdgnnmebipnil"
 
@@ -105,7 +107,7 @@ do_install() {
   # Native messaging host + Brave manifest (stable path: $BIN_DIR/spate-host).
   SPATE_SKIP_BUILD=1 PREFIX_HOME="$HOME_DIR" SPATE_EXTENSION_ID="${SPATE_EXTENSION_ID:-}" \
     CARGO_TARGET_DIR="$TARGET" "$ROOT/scripts/install-native-host.sh" | grep -v '^    Load ' || true
-  [[ -x "$HOST_BIN" && -f "$MANIFEST" ]] || die "native host install failed"
+  [[ -x "$HOST_BIN" && -f "$MANIFEST" && -f "$MANIFEST_CHROME" ]] || die "native host install failed"
 
   # CLI: a copy next to the host, linked from ~/.local/bin.
   say "Installing $CLI_LINK -> $CLI_BIN"
@@ -153,10 +155,10 @@ do_uninstall() {
   fi
   rm -rf "$APP" "$APP_DIR/.Spate.app.new" "$APP_DIR/.Spate.app.old"
   rmdir "$APP_DIR" 2>/dev/null || true
-  if [[ -e "$MANIFEST" || -e "$HOST_BIN" ]]; then
+  if [[ -e "$MANIFEST" || -e "$MANIFEST_CHROME" || -e "$HOST_BIN" ]]; then
     say "Removing the native messaging host and its Brave manifest"
   fi
-  rm -f "$MANIFEST" "$HOST_BIN"
+  rm -f "$MANIFEST" "$MANIFEST_CHROME" "$HOST_BIN"
   if [[ -L "$CLI_LINK" ]]; then
     say "Removing $CLI_LINK"
     rm -f "$CLI_LINK"
