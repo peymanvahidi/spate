@@ -71,7 +71,7 @@ Extension ID (pinned by `key` in `extension/manifest.json`): `akcgnbcpioinnkkmoo
 
 ## Capture flow (extension)
 
-1. `downloads.onCreated` → apply filters (≥ threshold, default 20 MB, or extension in the type list; never `blob:`/`data:`; skip downloads the extension started itself).
+1. `downloads.onDeterminingFilename` (not `onCreated`: Brave holds its "Save as…" dialog until this listener answers) → apply filters (≥ threshold, default 20 MB, or extension in the type list; never `blob:`/`data:`; skip downloads the extension started itself). Downloads left to Brave get `suggest()` and continue unchanged.
 2. `downloads.pause(id)`, collect cookies (`cookies.getAll`), referrer, user agent.
 3. Send `add`. On `ok: true` → `downloads.cancel` + `downloads.erase`. On anything else, or no answer in 4 s → `downloads.resume` (Brave keeps it). Nothing is ever lost.
 4. Holding Option (Alt) while clicking a link keeps that download in Brave.

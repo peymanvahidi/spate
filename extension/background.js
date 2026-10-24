@@ -64,21 +64,34 @@ async function takeBypass(item) {
 
 // ---------------------------------------------------------------- download capture
 
-chrome.downloads.onCreated.addListener((item) => {
-  handleDownload(item).catch((e) => console.warn('Spate: capture failed', e));
+// Decide in onDeterminingFilename, not onCreated: Brave holds its "Save as…" dialog (when "Ask
+// where to save each file" is on) until every listener here has answered. A captured download is
+// cancelled before we answer, so the dialog never opens; anything we leave to Brave gets
+// suggest() and continues exactly as it would without Spate.
+chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
+  handleDownload(item)
+    .catch((e) => {
+      console.warn('Spate: capture failed', e);
+      return false;
+    })
+    .then((handedOff) => {
+      if (!handedOff) suggest();
+    });
+  return true; // we answer asynchronously
 });
 
+/** Returns true when Spate took the download over (Brave's copy is cancelled and erased). */
 async function handleDownload(item) {
-  if (item.byExtensionId && item.byExtensionId === chrome.runtime.id) return;
+  if (item.byExtensionId && item.byExtensionId === chrome.runtime.id) return false;
   const settings = await loadSettings();
   const bypass = await takeBypass(item);
   const decision = decideCapture(item, settings, { selfId: chrome.runtime.id, bypass });
-  if (!decision.capture) return;
+  if (!decision.capture) return false;
 
   try {
     await chrome.downloads.pause(item.id);
   } catch {
-    return; // already finished or gone: nothing to take over
+    return false; // already finished or gone: nothing to take over
   }
 
   const reply = await sendAdd({
@@ -96,14 +109,15 @@ async function handleDownload(item) {
     try {
       await chrome.downloads.erase({ id: item.id });
     } catch { /* ignore */ }
-  } else {
-    try {
-      await chrome.downloads.resume(item.id);
-    } catch (e) {
-      console.warn('Spate: could not resume download', e);
-    }
-    console.info('Spate: left download in Brave:', errorCode(reply) || 'no answer');
+    return true;
   }
+  try {
+    await chrome.downloads.resume(item.id);
+  } catch (e) {
+    console.warn('Spate: could not resume download', e);
+  }
+  console.info('Spate: left download in Brave:', errorCode(reply) || 'no answer');
+  return false;
 }
 
 // ---------------------------------------------------------------- context menu
@@ -124,7 +138,7 @@ async function menuDownload(url, referrer) {
     console.info('Spate: menu download falls back to Brave:', errorCode(reply));
   }
   // Nothing is ever lost: Spate unavailable (or blob:/data: source) → Brave downloads it.
-  // Downloads we start carry byExtensionId, so onCreated skips them.
+  // Downloads we start carry byExtensionId, so the capture listener skips them.
   await chrome.downloads.download({ url });
 }
 
