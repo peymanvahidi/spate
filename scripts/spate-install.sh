@@ -49,7 +49,7 @@ spate_pids() {
   ps -axo pid=,command= | awk -v exe="$APP_EXE" -v any="$(real_home && echo 1 || echo 0)" '
     {
       pid = $1; sub(/^[ \t]*[0-9]+[ \t]+/, "")
-      if (index($0, exe) == 1 || (any == "1" && $0 ~ /\/Spate\.app\/Contents\/MacOS\/spate-app( |$)/)) print pid
+      if (index($0, exe) == 1 || (any == "1" && $0 ~ /^[^ ]*\/Spate\.app\/Contents\/MacOS\/spate-app( |$)/)) print pid
     }'
 }
 
