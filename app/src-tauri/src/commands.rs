@@ -21,7 +21,7 @@ fn err(code: &str, message: impl Into<String>) -> RpcError {
 
 #[tauri::command]
 pub async fn list(shell: State<'_, Arc<Shell>>) -> R<Vec<JobView>> {
-    Ok(shell.daemon.list().into_iter().map(|v| shell.patch(v)).collect())
+    Ok(shell.daemon.list())
 }
 
 #[tauri::command]

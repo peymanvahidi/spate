@@ -7,13 +7,15 @@
 #   SPATE_EXTENSION_ID  override the extension ID (default: derived from extension/manifest.json "key")
 #   SPATE_SKIP_BUILD=1  install an already-built target/release/spate-host
 #   CARGO_TARGET_DIR    honoured when locating the built binary
+#   PREFIX_HOME         install under this directory instead of $HOME (for tests)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HOST_NAME="com.spate.host"
-BIN_DIR="$HOME/Library/Application Support/Spate/bin"
+HOME_DIR="${PREFIX_HOME:-$HOME}"
+BIN_DIR="$HOME_DIR/Library/Application Support/Spate/bin"
 BIN="$BIN_DIR/spate-host"
-MANIFEST_DIR="$HOME/Library/Application Support/BraveSoftware/Brave-Browser/NativeMessagingHosts"
+MANIFEST_DIR="$HOME_DIR/Library/Application Support/BraveSoftware/Brave-Browser/NativeMessagingHosts"
 MANIFEST="$MANIFEST_DIR/$HOST_NAME.json"
 
 # Extension ID = first 32 hex chars of SHA-256(DER public key), mapped 0-f → a-p.

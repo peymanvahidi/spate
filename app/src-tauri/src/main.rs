@@ -35,8 +35,6 @@ pub struct Shell {
     pub data_dir: PathBuf,
     /// Folder chosen on the capture card, applied when the job finishes.
     pub dest: Mutex<HashMap<String, PathBuf>>,
-    /// Finished files moved there (persisted).
-    pub moves: Mutex<util::Moves>,
     pub island: Mutex<IslandState>,
     pub popover_hidden_at: Mutex<Option<Instant>>,
     /// Notification id → job id, so a click can reveal the file.
@@ -47,16 +45,8 @@ pub struct Shell {
 }
 
 impl Shell {
-    /// The job as the UI should see it: with the moved path, if the shell moved the file.
-    pub fn patch(&self, mut v: JobView) -> JobView {
-        if let Some(p) = self.moves.lock().unwrap().get(&v.id) {
-            v.path = Some(p.clone());
-        }
-        v
-    }
-
     pub fn job(&self, id: &str) -> Option<JobView> {
-        self.daemon.get(id).map(|v| self.patch(v))
+        self.daemon.get(id)
     }
 }
 
@@ -137,7 +127,6 @@ fn main() {
             let shell = Arc::new(Shell {
                 daemon: daemon.clone(),
                 log: logger,
-                moves: Mutex::new(util::Moves::load(data_dir.join("moved-files.json"))),
                 data_dir,
                 dest: Mutex::new(HashMap::new()),
                 island: Mutex::new(IslandState::default()),
@@ -148,6 +137,7 @@ fn main() {
                 tray: Mutex::new(None),
             });
             app.manage(shell.clone());
+            tauri::async_runtime::block_on(migrate_moves(&shell));
 
             windows::create_all(&handle)?;
             build_tray(&handle)?;
@@ -364,7 +354,6 @@ async fn forward(
                         continue;
                     }
                 }
-                let v = shell.patch(v);
                 let _ = app.emit("job", &v);
                 if finished || failed {
                     notify(&app, &shell, &v);
@@ -372,7 +361,6 @@ async fn forward(
             }
             Ok(DaemonEvent::Removed(id)) => {
                 last.remove(&id);
-                shell.moves.lock().unwrap().forget(&id);
                 shell.dest.lock().unwrap().remove(&id);
                 shell.log.log(&format!("event removed {id} forwarded"));
                 let _ = app.emit("removed", &id);
@@ -381,7 +369,7 @@ async fn forward(
                 shell.log.log(&format!("event stream lagged by {n}; resending every job"));
                 for v in shell.daemon.list() {
                     last.insert(v.id.clone(), v.state);
-                    let _ = app.emit("job", &shell.patch(v));
+                    let _ = app.emit("job", &v);
                 }
             }
             Err(RecvError::Closed) => break,
@@ -389,20 +377,51 @@ async fn forward(
     }
 }
 
-/// Move a finished file into the folder chosen on its card. Returns the job to show.
+/// Move a finished file into the folder chosen on its card and record the new path in the
+/// daemon (`set_path`). Returns the job to show.
 pub async fn move_finished(shell: &Arc<Shell>, v: JobView, dir: PathBuf) -> JobView {
-    let Some(path) = v.path.clone() else { return shell.patch(v) };
+    let Some(path) = v.path.clone() else { return v };
     let target = dir.clone();
     let res = tauri::async_runtime::spawn_blocking(move || util::move_into(&path, &target)).await;
     match res {
         Ok(Ok(p)) => {
             shell.log.log(&format!("job {} moved to the chosen folder", v.id));
-            shell.moves.lock().unwrap().set(&v.id, p);
+            if let Err(e) = shell.daemon.set_path(&v.id, &p).await {
+                shell.log.log(&format!("job {}: set_path failed: {}: {}", v.id, e.code, e.message));
+            }
         }
         Ok(Err(e)) => shell.log.log(&format!("job {}: move to chosen folder failed: {e}", v.id)),
         Err(e) => shell.log.log(&format!("job {}: move task failed: {e}", v.id)),
     }
-    shell.patch(v)
+    shell.daemon.get(&v.id).unwrap_or(v)
+}
+
+/// Versions before `set_path` kept the moved paths in `moved-files.json`. Hand them to the
+/// daemon once and drop the file. Entries that can't be recorded (file gone, job removed) are
+/// logged and dropped: the daemon's history is the only record from now on.
+async fn migrate_moves(shell: &Shell) {
+    let file = shell.data_dir.join("moved-files.json");
+    if !file.exists() {
+        return;
+    }
+    let (mut ok, mut dropped) = (0, 0);
+    for (id, path) in util::load_legacy_moves(&file) {
+        if shell.daemon.get(&id).and_then(|v| v.path).is_some_and(|p| p == path) {
+            ok += 1;
+            continue;
+        }
+        match shell.daemon.set_path(&id, &path).await {
+            Ok(()) => ok += 1,
+            Err(e) => {
+                dropped += 1;
+                shell.log.log(&format!("moved-files.json: job {id} not migrated: {}: {}", e.code, e.message));
+            }
+        }
+    }
+    match std::fs::remove_file(&file) {
+        Ok(()) => shell.log.log(&format!("moved-files.json migrated ({ok} recorded, {dropped} dropped) and removed")),
+        Err(e) => shell.log.log(&format!("moved-files.json: could not remove: {e}")),
+    }
 }
 
 /// Twice a second: the menu-bar speed and whether the island should be up.
