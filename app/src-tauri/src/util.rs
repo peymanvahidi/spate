@@ -1,5 +1,5 @@
 //! Plain helpers with no UI: the menu-bar speed text, moving a finished file to the folder
-//! chosen on the capture card, and the small JSON map that remembers those moves.
+//! chosen on the capture card, and reading the map older versions kept of those moves.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -74,42 +74,10 @@ pub fn move_into(file: &Path, dir: &Path) -> std::io::Result<PathBuf> {
     }
 }
 
-/// Finished files the shell moved (job id → new path), persisted so the history keeps
-/// pointing at them after a restart. The daemon's own record keeps the original path.
-pub struct Moves {
-    path: PathBuf,
-    map: HashMap<String, PathBuf>,
-}
-
-impl Moves {
-    pub fn load(path: PathBuf) -> Moves {
-        let map = std::fs::read(&path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-        Moves { path, map }
-    }
-
-    pub fn get(&self, id: &str) -> Option<&PathBuf> {
-        self.map.get(id)
-    }
-
-    pub fn set(&mut self, id: &str, p: PathBuf) {
-        self.map.insert(id.to_string(), p);
-        self.save();
-    }
-
-    pub fn forget(&mut self, id: &str) {
-        if self.map.remove(id).is_some() {
-            self.save();
-        }
-    }
-
-    fn save(&self) {
-        if let Ok(text) = serde_json::to_vec_pretty(&self.map) {
-            let tmp = self.path.with_extension("json.tmp");
-            if std::fs::write(&tmp, text).is_ok() {
-                let _ = std::fs::rename(&tmp, &self.path);
-            }
-        }
-    }
+/// The map an older shell kept of the finished files it moved (job id → new path), in
+/// `moved-files.json`. Read once at startup to hand the entries to the daemon (`set_path`).
+pub fn load_legacy_moves(path: &Path) -> HashMap<String, PathBuf> {
+    std::fs::read(path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -139,7 +107,7 @@ mod tests {
     }
 
     #[test]
-    fn move_and_remember() {
+    fn move_and_legacy_map() {
         let d = tempfile::tempdir().unwrap();
         let src = d.path().join("dl");
         let dst = d.path().join("chosen");
@@ -152,11 +120,11 @@ mod tests {
         assert_eq!(std::fs::read(&p).unwrap(), b"hello");
         assert!(!src.join("f.bin").exists());
 
-        let store = d.path().join("moves.json");
-        let mut m = Moves::load(store.clone());
-        m.set("job1", p.clone());
-        assert_eq!(Moves::load(store.clone()).get("job1"), Some(&p));
-        m.forget("job1");
-        assert_eq!(Moves::load(store).get("job1"), None);
+        let store = d.path().join("moved-files.json");
+        assert!(load_legacy_moves(&store).is_empty());
+        std::fs::write(&store, format!("{{\"job1\": {:?}}}", p.display().to_string())).unwrap();
+        assert_eq!(load_legacy_moves(&store).get("job1"), Some(&p));
+        std::fs::write(&store, b"not json").unwrap();
+        assert!(load_legacy_moves(&store).is_empty());
     }
 }
