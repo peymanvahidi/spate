@@ -11,7 +11,7 @@ Subagents build the pieces, each in its own git worktree/branch off `feat/engine
 | 3a | App UI: menu-bar popover, capture card, main window, notch island (web, sample data) | agent | `app/ui/` | contracts | merged |
 | 3b | Tauri 2 shell: tray, windows, notch window, daemon embedding, login item | agent | `app/` | daemon, 3a | merged |
 | 4 | Stabilize: flaky daemon test, 99% tail stall, `removed` in UI, moved-file path in daemon | agent | `crates/`, `app/ui/` | 3b | merged |
-| 5 | `make install` (+ wire `set_path` in the shell), end-to-end test in Brave | agent + PM + user | `Makefile`, `scripts/`, `app/src-tauri` | all | 5a merged; real install pending |
+| 5 | `make install` (+ wire `set_path` in the shell), end-to-end test in Brave | agent + PM + user | `Makefile`, `scripts/`, `app/src-tauri` | all | done: installed and verified in Brave with the user |
 | later | explicit lost-cookies flag (daemon); `spate pause ""` treats an empty id prefix as a match; retry ramp after an undo; Content-Disposition name collisions | — | — | — | backlog |
 | v2 | Video download (yt-dlp/ffmpeg), scheduler, speed limit, link grabbing, checksums | — | — | — | later |
 
